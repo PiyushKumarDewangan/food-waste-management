@@ -1,0 +1,15 @@
+/*
+  HowItWorks.css
+
+  All visual styling for this component is handled with Tailwind
+  utility classes directly inside HowItWorks.jsx, as required.
+
+  This file is intentionally left without component styling.
+  It only exists to satisfy the "one CSS file per component" file
+  structure and to hold Tailwind-related setup if your project
+  does not already load Tailwind globally (e.g. via index.css).
+
+  If your project already has @tailwind base/components/utilities
+  declared in a global stylesheet, you do NOT need to import this
+  file at all — it can stay empty.
+*/
