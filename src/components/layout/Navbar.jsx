@@ -4,9 +4,10 @@ import { Menu, X, Leaf } from "lucide-react";
 // Nav links stored in an array so new items can be added easily later
 const NAV_LINKS = [
   { label: "Home", href: "#home" },
-  { label: "How It Works", href: "#how-it-works" },
-  { label: "Impact", href: "#impact" },
   { label: "About", href: "#about" },
+  { label: "How It Works", href: "#how-it-works" },
+  { label: "Features", href: "#features" },
+  { label: "Impact", href: "#impact" },
 ];
 
 const Navbar = () => {

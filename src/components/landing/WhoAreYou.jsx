@@ -67,7 +67,7 @@ const WhoAreYou = () => {
                 {role.title}
               </h3>
 
-              <p className="text-slate-600 text-sm sm:text-base leading-relaxed mb-6 flex-grow">
+              <p className="text-slate-600 text-sm sm:text-base leading-relaxed mb-6 grow">
                 {role.description}
               </p>
 
