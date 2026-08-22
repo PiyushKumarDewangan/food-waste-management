@@ -5,6 +5,8 @@ import ProblemSolution from "../components/landing/ProblemSolution";
 import HowItWorks from "../components/landing/HowItWorks";
 import WhoAreYou from "../components/landing/WhoAreYou";
 import Features from "../components/landing/Features";
+import CTA from "../components/landing/CTA";
+import Footer from "../components/layout/Footer";
 
 const LandingPage = () => {
   return (
@@ -30,6 +32,10 @@ const LandingPage = () => {
       <section id="features">
         <Features />
       </section>
+
+      <CTA />
+
+      <Footer />
 
     </>
   );
