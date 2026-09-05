@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #2E7D32;
+  --color-primary-dark: #256428;
+  --color-secondary: #66BB6A;
+  --color-accent: #FFB74D;
+  --color-background: #F8FAF7;
+  --color-ink: #1F2937;
+  --color-borderc: #E5E7EB;
+
+  --font-sans: "Poppins", ui-sans-serif, system-ui, sans-serif;
+
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+
+  --shadow-soft: 0 4px 24px rgba(31, 41, 55, 0.06);
+  --shadow-card: 0 10px 40px rgba(31, 41, 55, 0.08);
+
+  --animate-floatSlow: floatSlow 5s ease-in-out infinite;
+  --animate-floatSlower: floatSlower 7s ease-in-out infinite;
+  --animate-pulseSoft: pulseSoft 4s ease-in-out infinite;
+}
+
+@keyframes floatSlow {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-10px); }
+}
+@keyframes floatSlower {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(8px); }
+}
+@keyframes pulseSoft {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.6; }
+}
+
+html {
+  scroll-behavior: smooth;
+}
+section {
+  scroll-margin-top: 70px;
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid #2E7D32;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
