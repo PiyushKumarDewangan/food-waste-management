@@ -1,0 +1,6 @@
+node_modules/
+.env
+uploads/verification-docs/*
+!uploads/verification-docs/.gitkeep
+*.log
+.DS_Store
