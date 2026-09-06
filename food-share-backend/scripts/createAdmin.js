@@ -8,7 +8,11 @@
  *
  * Args (in order): fullName email password phone city
  */
+import dns from 'dns'
+
 import mongoose from 'mongoose'
+dns.setServers(['8.8.8.8', '8.8.4.4'])
+
 import { env } from '../src/config/env.js'
 import { User } from '../src/models/User.js'
 import { hashPassword } from '../src/utils/hashPassword.js'

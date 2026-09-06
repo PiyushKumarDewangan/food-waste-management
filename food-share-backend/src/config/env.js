@@ -27,11 +27,20 @@ export const env = {
   JWT_REFRESH_EXPIRY: process.env.JWT_REFRESH_EXPIRY || '7d',
 
   CORS_ORIGIN: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  FRONTEND_URL: process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'http://localhost:5173',
   REFRESH_COOKIE_NAME: process.env.REFRESH_COOKIE_NAME || 'fb_refresh_token',
 
   MAX_UPLOAD_SIZE_MB: Number(process.env.MAX_UPLOAD_SIZE_MB) || 5,
 
   GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || '',
+
+  // SMTP (email sending) — optional in development; if unset, sendEmail.js
+  // logs emails to the console instead of failing the request.
+  SMTP_HOST: process.env.SMTP_HOST || '',
+  SMTP_PORT: Number(process.env.SMTP_PORT) || 587,
+  SMTP_USER: process.env.SMTP_USER || '',
+  SMTP_PASS: process.env.SMTP_PASS || '',
+  SMTP_FROM: process.env.SMTP_FROM || '"FoodBridge" <no-reply@foodbridge.org>',
 }
 
 export default env

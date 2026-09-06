@@ -1,6 +1,9 @@
 import mongoose from 'mongoose'
+import dns from 'dns'
 import { env } from './env.js'
 import { logger } from '../utils/logger.js'
+
+dns.setServers(['8.8.8.8', '8.8.4.4'])
 
 export async function connectDB() {
   try {
@@ -8,7 +11,6 @@ export async function connectDB() {
     logger.info(`MongoDB connected: ${conn.connection.host}/${conn.connection.name}`)
   } catch (error) {
     logger.error('MongoDB connection failed:', error.message)
-    // A backend that can't reach its database should not silently keep running.
     process.exit(1)
   }
 }

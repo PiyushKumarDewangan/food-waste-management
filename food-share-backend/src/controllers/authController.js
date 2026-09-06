@@ -9,7 +9,10 @@ import { RefreshToken } from '../models/RefreshToken.js'
 import { hashPassword, comparePassword } from '../utils/hashPassword.js'
 import { hashToken } from '../utils/hashToken.js'
 import { generateAccessToken, generateRefreshToken, verifyRefreshToken } from '../utils/generateTokens.js'
+import { sendEmail } from '../utils/sendEmail.js'
+import { passwordResetEmail, passwordChangedEmail } from '../emails/passwordResetEmail.js'
 import { env } from '../config/env.js'
+import { logger } from '../utils/logger.js'
 import crypto from 'crypto'
 
 const REFRESH_COOKIE_OPTIONS = {
@@ -292,10 +295,17 @@ export const forgotPassword = asyncHandler(async (req, res) => {
   user.passwordResetExpires = new Date(Date.now() + 60 * 60 * 1000) // 1 hour
   await user.save()
 
-  // TODO: send `rawResetToken` via email (e.g. nodemailer / SES / Resend).
-  // The raw token must ONLY ever be emailed — never logged or returned in the API response.
-  // Reset link shape: `${FRONTEND_URL}/reset-password?token=${rawResetToken}`
-  console.log(`[DEV ONLY] Password reset token for ${email}:`, rawResetToken)
+  const resetUrl = `${env.FRONTEND_URL}/reset-password?token=${rawResetToken}`
+  const { subject, html, text } = passwordResetEmail({ fullName: user.fullName, resetUrl })
+
+  try {
+    await sendEmail({ to: user.email, subject, html, text })
+  } catch (err) {
+    // Don't leak email-provider failures to the client — the generic
+    // message is returned either way. The real error is logged server-side
+    // so it's debuggable without exposing anything to a potential attacker.
+    logger.error('Failed to send password reset email:', err.message)
+  }
 
   return res.status(200).json(new ApiResponse(200, null, genericMessage))
 })
@@ -321,6 +331,14 @@ export const resetPassword = asyncHandler(async (req, res) => {
 
   // Invalidate all existing sessions for this user as a security measure.
   await RefreshToken.updateMany({ user: user._id, revoked: false }, { revoked: true, revokedAt: new Date() })
+
+  try {
+    const { subject, html, text } = passwordChangedEmail({ fullName: user.fullName })
+    await sendEmail({ to: user.email, subject, html, text })
+  } catch (err) {
+    // A failed notification email should never block a successful password reset.
+    logger.error('Failed to send password-changed confirmation email:', err.message)
+  }
 
   return res.status(200).json(new ApiResponse(200, null, 'Password reset successful. Please log in.'))
 })

@@ -4,6 +4,7 @@ import LandingPage from "../pages/LandingPage";
 import Login from "../pages/auth/Login";
 import Register from "../pages/auth/Register";
 import ForgotPassword from "../pages/auth/ForgotPassword";
+import ResetPassword from "../pages/auth/ResetPassword";
 import Dashboard from "../pages/dashboard/Dashboard";
 import AdminDashboard from "../pages/admin/AdminDashboard";
 import ProtectedRoute from "../components/layout/ProtectedRoute";
@@ -17,6 +18,7 @@ function AppRoutes() {
       {/* Authentication */}
       <Route path="/login" element={<Login />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
 
       {/* Registration Flow */}
       <Route path="/register/account" element={<Register />} />
