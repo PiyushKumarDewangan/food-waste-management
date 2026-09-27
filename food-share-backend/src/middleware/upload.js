@@ -5,11 +5,13 @@ import { ApiError } from '../utils/ApiError.js'
 import { env } from '../config/env.js'
 
 const UPLOAD_DIR = path.resolve(process.cwd(), 'uploads/verification-docs')
+// project/uploads/verification-docs
+// This is where uploaded files are stored
 
 // Ensure the upload directory exists (useful on first run / fresh clone).
 if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true })
-}
+}//Create folder if missing
 
 const ALLOWED_MIME_TYPES = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png']
 
@@ -22,6 +24,7 @@ const storage = multer.diskStorage({
   },
 })
 
+// file filter Runs before saving
 function fileFilter(req, file, cb) {
   if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
     return cb(new ApiError(400, 'Unsupported file type. Please upload a PDF, JPG, JPEG or PNG file.'))

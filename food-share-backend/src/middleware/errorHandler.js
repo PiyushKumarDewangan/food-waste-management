@@ -30,11 +30,15 @@ export function errorHandler(err, req, res, next) {
     errors: error.errors,
     // Stack traces only ever exposed in non-production environments.
     ...(env.NODE_ENV !== 'production' && { stack: error.stack }),
+
+//   if (env.NODE_ENV !== 'production') {
+//     response.stack = error.stack
+//   }
   })
 }
 
 export function notFoundHandler(req, res, next) {
   next(new ApiError(404, `Route not found: ${req.originalUrl}`))
 }
-
+// if route doesn't exist, this above func. create a message format and sends it to errorHandler() using next(...)
 export default errorHandler

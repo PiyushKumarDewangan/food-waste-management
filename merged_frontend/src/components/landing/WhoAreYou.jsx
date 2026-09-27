@@ -1,5 +1,5 @@
 import React from "react";
-
+import { Link } from 'react-router-dom';
 const roles = [
   {
     emoji: "🎁",
@@ -71,13 +71,13 @@ const WhoAreYou = () => {
                 {role.description}
               </p>
 
-              <a
-                href="#"
+              <Link
+                to="/login"
                 className={`inline-flex items-center gap-2 font-semibold ${role.ctaColor} hover:gap-3 transition-all duration-200`}
               >
                 {role.cta}
                 <span aria-hidden="true">→</span>
-              </a>
+              </Link>
             </div>
           ))}
         </div>

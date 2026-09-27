@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Authentication & user backend for the Food Waste Management Platform (FoodBridge).",
+  "description": "Authentication & user backend for the Food Waste Management Platform (FoodShare).",
   "main": "src/server.js",
   "scripts": {
     "dev": "nodemon src/server.js",

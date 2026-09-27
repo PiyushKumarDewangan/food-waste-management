@@ -6,9 +6,17 @@
  * needs to understand ONE error format, and the frontend only needs to
  * parse ONE error response shape.
  */
+// 400 Bad Request
+// 401 Unauthorized
+// 403 Forbidden
+// 404 Not Found
+// 500 Internal Server Error
+
 class ApiError extends Error {
   constructor(statusCode, message = 'Something went wrong', errors = [], stack = '') {
     super(message)
+    // This calls the parent Error constructor.
+    // Without super(), inheritance from Error won't work properly.
     this.statusCode = statusCode
     this.data = null
     this.success = false
@@ -18,6 +26,10 @@ class ApiError extends Error {
       this.stack = stack
     } else {
       Error.captureStackTrace(this, this.constructor)
+    // Automatically generate a stack trace.Error occurred
+    // at createUser(...)
+    // at registerController(...)
+    // at router.post(...)
     }
   }
 }

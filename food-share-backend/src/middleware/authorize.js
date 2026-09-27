@@ -4,6 +4,10 @@ import { ApiError } from '../utils/ApiError.js'
  * Role guard — use AFTER `authenticate`. Restricts a route to specific
  * roles, e.g. authorize('donor') or authorize('admin', 'receiver').
  */
+
+//...allowedRoles
+// This is the rest operator.
+// It collects all arguments into an array
 export function authorize(...allowedRoles) {
   return (req, res, next) => {
     if (!req.user) {

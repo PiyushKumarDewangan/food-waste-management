@@ -69,6 +69,7 @@ const userSchema = new mongoose.Schema(
 )
 
 // Never leak sensitive fields even if a stray query forgets to .select('-passwordHash')
+// This method is used to remove sensitive fields before sending user data to the frontend.
 userSchema.methods.toSafeObject = function () {
   const obj = this.toObject()
   delete obj.passwordHash

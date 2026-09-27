@@ -27,6 +27,7 @@ export const authenticate = asyncHandler(async (req, res, next) => {
   }
 
   const user = await User.findById(decoded.sub)
+  // Find the user document whose _id equals this id.
   if (!user) {
     throw new ApiError(401, 'User account no longer exists.')
   }

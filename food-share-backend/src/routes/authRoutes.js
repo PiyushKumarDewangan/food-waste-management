@@ -30,14 +30,7 @@ router.post('/register/donor', authRateLimiter, registerDonorValidator, validate
 
 // multer runs BEFORE validation here because the verification document arrives
 // as multipart/form-data — express-validator needs req.body already parsed by multer first.
-router.post(
-  '/register/receiver',
-  authRateLimiter,
-  uploadVerificationDocument,
-  registerReceiverValidator,
-  validateRequest,
-  registerReceiver
-)
+router.post('/register/receiver', authRateLimiter, uploadVerificationDocument, registerReceiverValidator, validateRequest, registerReceiver)
 
 router.post('/register/volunteer', authRateLimiter, registerVolunteerValidator, validateRequest, registerVolunteer)
 

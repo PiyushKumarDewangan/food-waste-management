@@ -1,8 +1,8 @@
 import express from 'express'
 import cors from 'cors'
-import helmet from 'helmet'
-import cookieParser from 'cookie-parser'
-import morgan from 'morgan'
+import helmet from 'helmet'//Adds security headers automatically,Protects against common attacks
+import cookieParser from 'cookie-parser'//Reads cookies sent by the browser
+import morgan from 'morgan'//Logs HTTP requests
 import path from 'path'
 
 import { env } from './config/env.js'
@@ -16,14 +16,17 @@ import volunteerRoutes from './routes/volunteerRoutes.js'
 const app = express()
 
 // --- Security & core middleware -------------------------------------------
-app.use(helmet())
+app.use(helmet()) //Runs Helmet for every request
 app.use(
   cors({
     origin: env.CORS_ORIGIN, // must exactly match the frontend's origin
     credentials: true, // required so the httpOnly refresh-token cookie is sent/received
+    // Allows cookies to be sent.
+    // Needed because you're using refresh-token cookies
+
   })
 )
-app.use(express.json({ limit: '1mb' }))
+app.use(express.json({ limit: '1mb' }))//Converts JSON request body into JavaScript objects
 app.use(express.urlencoded({ extended: true, limit: '1mb' }))
 app.use(cookieParser())
 
@@ -38,6 +41,7 @@ app.use('/uploads', express.static(path.resolve(process.cwd(), 'uploads')))
 app.get('/api/health', (req, res) => {
   res.status(200).json({ success: true, message: 'FoodBridge API is running.' })
 })
+//Simple endpoint to check if server is alive
 
 // --- Routes -------------------------------------------------------------------
 app.use('/api/auth', authRoutes)
@@ -46,7 +50,21 @@ app.use('/api/receivers', receiverRoutes)
 app.use('/api/volunteers', volunteerRoutes)
 
 // --- 404 + centralized error handler (must be registered LAST) ---------------
-app.use(notFoundHandler)
-app.use(errorHandler)
+app.use(notFoundHandler)//Runs when no route matches
+app.use(errorHandler)//Central place for handling all errors
+//If they were placed at the top, every request would hit them before reaching the routes
 
 export default app
+
+// app.js is the main configuration center of your FoodShare backend. It:
+
+// Creates the Express app.
+// Adds security (helmet).
+// Allows frontend requests (cors).
+// Parses JSON, forms, and cookies.
+// Logs requests (morgan).
+// Serves uploaded files.
+// Registers authentication, donor, receiver, and volunteer routes.
+// Handles 404 errors.
+// Handles all application errors in one place.
+// Exports the configured app to server.js, where the server actually starts.

@@ -28,3 +28,4 @@ const donorProfileSchema = new mongoose.Schema(
 
 export const DonorProfile = mongoose.model('DonorProfile', donorProfileSchema)
 export default DonorProfile
+

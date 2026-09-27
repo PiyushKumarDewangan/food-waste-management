@@ -13,15 +13,18 @@ import { sendEmail } from '../utils/sendEmail.js'
 import { passwordResetEmail, passwordChangedEmail } from '../emails/passwordResetEmail.js'
 import { env } from '../config/env.js'
 import { logger } from '../utils/logger.js'
-import crypto from 'crypto'
+import crypto from 'crypto' // generate secure random reset tokens for password reset links
 
 const REFRESH_COOKIE_OPTIONS = {
-  httpOnly: true,
-  secure: env.NODE_ENV === 'production',
-  sameSite: env.NODE_ENV === 'production' ? 'none' : 'lax',
-  path: '/api/auth',
-  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days — keep in sync with JWT_REFRESH_EXPIRY
+  httpOnly: true, // Means: JavaScript in browser CANNOT read this cookie
+  secure: env.NODE_ENV === 'production', //When secure:true Cookie only travels through HTTPS Never through normal HTTP.
+  sameSite: env.NODE_ENV === 'production' ? 'none' : 'lax', //Can another website send this cookie?
+  path: '/api/auth', //Cookie only works for routes inside: /api/auth/*
+  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days — keep in sync with JWT_REFRESH_EXPIRY, After that the browser automatically removes the cookie
 }
+//This object stores all settings used when creating the refresh-token cookie
+//A web cookie is a small text file that a website's server sends to your web browser and stores on your computer or device when you visit a site
+//Because standard web browsing protocol (HTTP) doesn't naturally remember past activity, cookies act as a website's memory to help it recognize your device and actions as you move from page to page or return later
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -32,20 +35,33 @@ async function issueTokens(res, user, req) {
   const rawRefreshToken = generateRefreshToken(user)
 
   const decoded = verifyRefreshToken(rawRefreshToken)
+  //Immediately verifies and decodes the refresh token. Why? Because we need its expiry date.
   await RefreshToken.create({
     user: user._id,
     tokenHash: hashToken(rawRefreshToken),
     expiresAt: new Date(decoded.exp * 1000),
     createdByIp: req.ip,
-  })
+  })//Creates cookie in browser
 
   res.cookie(env.REFRESH_COOKIE_NAME, rawRefreshToken, REFRESH_COOKIE_OPTIONS)
   return accessToken
 }
+// Purpose: Generate tokens, Save refresh token, Set cookie, Return access token
+/* Browser:
+  Refresh Token Cookie
+
+Frontend:
+  Access Token
+
+Database:
+  Hashed Refresh Token
+*/
 
 function checkDuplicateEmailOrPhone(email, phone) {
   return User.findOne({ $or: [{ email }, { phone }] })
 }
+//Before creating a new user, we must ensure:
+//Email is unique, Phone is unique.
 
 // ---------------------------------------------------------------------------
 // POST /api/auth/register/donor
@@ -55,12 +71,14 @@ export const registerDonor = asyncHandler(async (req, res) => {
     fullName, email, phone, password, city,
     donorType, organizationName, pickupAddress, pickupAvailability, foodSafetyAccepted,
   } = req.body
+// object destructuring
 
   const existing = await checkDuplicateEmailOrPhone(email, phone)
   if (existing) throw new ApiError(409, 'An account with this email or phone already exists.')
+    // 409: Requested data conflicts with existing data
 
   const passwordHash = await hashPassword(password)
-
+ 
   const user = await User.create({
     fullName, email, phone, city,
     passwordHash,
@@ -82,6 +100,7 @@ export const registerDonor = asyncHandler(async (req, res) => {
   return res
     .status(201)
     .json(new ApiResponse(201, { accessToken, user: user.toSafeObject(), status: 'active' }, 'Donor account created successfully.'))
+    // 201: A new resource was created.
 })
 
 // ---------------------------------------------------------------------------
@@ -205,6 +224,7 @@ export const login = asyncHandler(async (req, res) => {
 export const refresh = asyncHandler(async (req, res) => {
   const rawToken = req.cookies?.[env.REFRESH_COOKIE_NAME]
   if (!rawToken) throw new ApiError(401, 'No refresh token provided. Please log in again.')
+//401 Unauthorized You don't have valid authentication.
 
   let decoded
   try {
@@ -221,6 +241,8 @@ export const refresh = asyncHandler(async (req, res) => {
     if (storedToken) {
       await RefreshToken.updateMany({ user: storedToken.user, revoked: false }, { revoked: true, revokedAt: new Date() })
     }
+    //This immediately logs out every device.
+    
     res.clearCookie(env.REFRESH_COOKIE_NAME, { path: '/api/auth' })
     throw new ApiError(401, 'Session invalid. Please log in again.')
   }
@@ -274,6 +296,8 @@ export const logout = asyncHandler(async (req, res) => {
 export const getMe = asyncHandler(async (req, res) => {
   return res.status(200).json(new ApiResponse(200, { user: req.user.toSafeObject() }, 'Current user fetched.'))
 })
+// 200 OK means request succeeded.
+
 
 // ---------------------------------------------------------------------------
 // POST /api/auth/forgot-password

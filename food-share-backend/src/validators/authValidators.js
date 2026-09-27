@@ -1,7 +1,9 @@
 import { body } from 'express-validator'
+// Look inside req.body and validate a field.
 
 // Shared account-detail rules (Step 1 of registration) reused by all three
 // role-specific register endpoints.
+
 const accountDetailRules = [
   body('fullName').trim().notEmpty().withMessage('Full name is required.'),
   body('email').trim().isEmail().withMessage('Enter a valid email address.').normalizeEmail(),
@@ -14,9 +16,17 @@ const accountDetailRules = [
     .withMessage('Password must be at least 8 characters.'),
   body('city').trim().notEmpty().withMessage('City or service area is required.'),
 ]
+// This is a reusable set of validations.
+// Why?Because:
+// Donor registration
+// Receiver registration
+// Volunteer registration
+// all need: Full Name,Email,Phone,Password,City.
+// Instead of writing those validations 3 times, you write them once
 
 export const registerDonorValidator = [
   ...accountDetailRules,
+  // copies all common validation
   body('donorType').isIn(['individual', 'business']).withMessage('Invalid account type.'),
   body('organizationName')
     .if(body('donorType').equals('business'))
