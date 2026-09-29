@@ -16,7 +16,11 @@ import volunteerRoutes from './routes/volunteerRoutes.js'
 const app = express()
 
 // --- Security & core middleware -------------------------------------------
-app.use(helmet()) //Runs Helmet for every request
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  })
+) // Runs Helmet for every request
 app.use(
   cors({
     origin: env.CORS_ORIGIN, // must exactly match the frontend's origin
@@ -35,7 +39,14 @@ if (env.NODE_ENV !== 'production') {
 }
 
 // Serve uploaded verification documents statically (dev only — use S3/CDN in production)
-app.use('/uploads', express.static(path.resolve(process.cwd(), 'uploads')))
+app.use(
+  '/uploads',
+  express.static(path.resolve(process.cwd(), 'uploads'), {
+    setHeaders: (res) => {
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    },
+  })
+)
 
 // --- Health check ------------------------------------------------------------
 app.get('/api/health', (req, res) => {

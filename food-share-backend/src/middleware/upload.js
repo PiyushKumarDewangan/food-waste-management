@@ -38,6 +38,32 @@ export const uploadVerificationDocument = multer({
   limits: { fileSize: env.MAX_UPLOAD_SIZE_MB * 1024 * 1024 },
 }).single('verificationDocument')
 
-// NOTE: For production, swap `storage` for an S3 (or similar) multer-storage
-// adapter instead of the local disk — local disk storage doesn't survive
-// container restarts/horizontal scaling.
+// Food photos directory
+const FOOD_UPLOAD_DIR = path.resolve(process.cwd(), 'uploads/food')
+if (!fs.existsSync(FOOD_UPLOAD_DIR)) {
+  fs.mkdirSync(FOOD_UPLOAD_DIR, { recursive: true })
+}
+
+const foodStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, FOOD_UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`
+    const ext = path.extname(file.originalname)
+    cb(null, `food-${uniqueSuffix}${ext}`)
+  },
+})
+
+const FOOD_MIME_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
+function foodFileFilter(req, file, cb) {
+  if (!FOOD_MIME_TYPES.includes(file.mimetype)) {
+    return cb(new ApiError(400, 'Unsupported image type. Please upload a JPG, PNG or WEBP file.'))
+  }
+  cb(null, true)
+}
+
+export const uploadFoodPhoto = multer({
+  storage: foodStorage,
+  fileFilter: foodFileFilter,
+  limits: { fileSize: env.MAX_UPLOAD_SIZE_MB * 1024 * 1024 },
+}).single('foodPhoto')
+
