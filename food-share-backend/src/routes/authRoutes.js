@@ -10,11 +10,13 @@ import {
   forgotPassword,
   resetPassword,
   googleLogin,
+  uploadUserAvatar,
+  changePassword,
 } from '../controllers/authController.js'
 import { validateRequest } from '../middleware/validateRequest.js'
 import { authenticate } from '../middleware/authenticate.js'
 import { authRateLimiter, loginRateLimiter } from '../middleware/rateLimiter.js'
-import { uploadVerificationDocument } from '../middleware/upload.js'
+import { uploadVerificationDocument, uploadAvatar } from '../middleware/upload.js'
 import {
   registerDonorValidator,
   registerReceiverValidator,
@@ -22,6 +24,7 @@ import {
   loginValidator,
   forgotPasswordValidator,
   resetPasswordValidator,
+  changePasswordValidator,
 } from '../validators/authValidators.js'
 
 const router = Router()
@@ -38,6 +41,8 @@ router.post('/login', loginRateLimiter, loginValidator, validateRequest, login)
 router.post('/refresh', refresh)
 router.post('/logout', logout)
 router.get('/me', authenticate, getMe)
+router.post('/upload-avatar', authenticate, uploadAvatar, uploadUserAvatar)
+router.patch('/change-password', authenticate, changePasswordValidator, validateRequest, changePassword)
 
 router.post('/forgot-password', authRateLimiter, forgotPasswordValidator, validateRequest, forgotPassword)
 router.post('/reset-password', authRateLimiter, resetPasswordValidator, validateRequest, resetPassword)

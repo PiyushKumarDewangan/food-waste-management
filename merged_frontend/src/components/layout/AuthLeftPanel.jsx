@@ -69,7 +69,7 @@ export default function AuthLeftPanel({
         <span className="flex items-center justify-center w-8 h-8 rounded-full bg-white/15">
           <Leaf className="w-4 h-4 text-white" aria-hidden="true" />
         </span>
-        <span className="font-bold text-base tracking-tight">FoodBridge</span>
+        <span className="font-bold text-base tracking-tight">FoodShare</span>
       </div>
 
       {/* Illustration + copy */}

@@ -21,11 +21,16 @@ import {
   KeyRound,
   Copy,
   Check,
+  X,
 } from 'lucide-react'
 import donorService from '../../services/donorService'
 import { getFoodImageUrl, handleImageError } from '../../utils/imageHelper'
+import { formatQuantityUnit } from '../../utils/unitHelper'
+import { useIsMobile } from '../../utils/deviceHelper'
+import LiveTrackingMap from '../../components/common/LiveTrackingMap'
 
 export default function Exchanges() {
+  const isMobile = useIsMobile()
   const [activeTab, setActiveTab] = useState('in_progress')
   const [typeFilter, setTypeFilter] = useState('all') // 'all' | 'volunteer' | 'direct'
   const [exchanges, setExchanges] = useState([])
@@ -37,9 +42,8 @@ export default function Exchanges() {
   const [feedbackComment, setFeedbackComment] = useState('')
   const [submittingActionId, setSubmittingActionId] = useState(null)
   const [copiedCodeId, setCopiedCodeId] = useState(null)
-  const [handoverModal, setHandoverModal] = useState(null)
-  const [inputCode, setInputCode] = useState('')
-  const [handoverError, setHandoverError] = useState('')
+  const [copiedPhoneId, setCopiedPhoneId] = useState(null)
+  const [phoneToast, setPhoneToast] = useState('')
 
   const loadExchanges = async (tab = activeTab) => {
     try {
@@ -80,29 +84,40 @@ export default function Exchanges() {
     setTimeout(() => setCopiedCodeId(null), 2000)
   }
 
-  const handleOpenHandover = (exchange) => {
-    setHandoverModal(exchange)
-    setInputCode(exchange.pickupCode || '')
-    setHandoverError('')
+  const handleCopyPhone = (phoneNumber, exchangeId) => {
+    if (!phoneNumber) return
+    const textToCopy = phoneNumber.trim()
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(textToCopy).then(() => {
+        setCopiedPhoneId(exchangeId)
+        setPhoneToast(`Volunteer phone number copied: ${textToCopy}`)
+        setTimeout(() => setCopiedPhoneId(null), 3000)
+        setTimeout(() => setPhoneToast(''), 4000)
+      }).catch(() => {
+        fallbackCopyText(textToCopy, exchangeId)
+      })
+    } else {
+      fallbackCopyText(textToCopy, exchangeId)
+    }
   }
 
-  const handleConfirmHandoverWithCode = async (e) => {
-    e.preventDefault()
-    if (!handoverModal) return
-    const isVolunteer = handoverModal.deliveryType === 'volunteer_delivery'
-    const note = isVolunteer
-      ? `Handed food over to Volunteer ${handoverModal.volunteerInfo?.name || 'Courier'} (Verified with code #${inputCode})`
-      : `Handed food over to Receiver (Verified with code #${inputCode})`
-
+  const fallbackCopyText = (text, exchangeId) => {
     try {
-      setSubmittingActionId(handoverModal._id)
-      await donorService.updateExchangeStatus(handoverModal._id, 'picked_up', note, inputCode)
-      setHandoverModal(null)
-      await loadExchanges(activeTab)
-    } catch (err) {
-      setHandoverError(err.message || 'Failed to verify handover code.')
-    } finally {
-      setSubmittingActionId(null)
+      const el = document.createElement('textarea')
+      el.value = text
+      el.style.position = 'fixed'
+      el.style.left = '-9999px'
+      document.body.appendChild(el)
+      el.focus()
+      el.select()
+      document.execCommand('copy')
+      document.body.removeChild(el)
+      setCopiedPhoneId(exchangeId)
+      setPhoneToast(`Volunteer phone number copied: ${text}`)
+      setTimeout(() => setCopiedPhoneId(null), 3000)
+      setTimeout(() => setPhoneToast(''), 4000)
+    } catch {
+      alert(`Volunteer phone number: ${text}`)
     }
   }
 
@@ -146,7 +161,15 @@ export default function Exchanges() {
   ]
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative">
+      {/* Phone Copied Toast */}
+      {phoneToast && (
+        <div className="fixed top-20 right-6 z-50 flex items-center gap-2 px-4 py-3 bg-[#1F2937] text-white rounded-xl shadow-xl text-xs font-semibold animate-in slide-in-from-top-3">
+          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+          <span>{phoneToast}</span>
+        </div>
+      )}
+
       {/* Header (Pages 8 & 9 in PDF) */}
       <div>
         <h1 className="text-2xl font-extrabold text-gray-900 tracking-tight">Exchanges</h1>
@@ -258,18 +281,19 @@ export default function Exchanges() {
             const volunteer = exchange.volunteerInfo || {}
 
             // Calculate stepper progress indices
+            // 5 visible steps for volunteer-based exchange:
+            // 1. Accepted, 2. Searching Volunteer, 3. Volunteer Assigned, 4. Food Picked Up, 5. Completed
             const volunteerSteps = [
               { key: 'accepted', label: 'Accepted' },
-              { key: 'ready_for_pickup', label: 'Ready for Pickup' },
+              { key: 'searching_volunteer', label: 'Searching Volunteer' },
               { key: 'volunteer_assigned', label: 'Volunteer Assigned' },
-              { key: 'picked_up', label: 'Picked Up by Volunteer' },
+              { key: 'picked_up', label: 'Food Picked Up' },
               { key: 'completed', label: 'Completed' },
             ]
 
             const directSteps = [
               { key: 'accepted', label: 'Accepted' },
               { key: 'ready_for_pickup', label: 'Ready for Pickup' },
-              { key: 'picked_up', label: 'Picked Up' },
               { key: 'completed', label: 'Completed' },
             ]
 
@@ -277,15 +301,24 @@ export default function Exchanges() {
 
             // Determine status index
             let currentStepIdx = 0
-            if (exchange.status === 'completed') currentStepIdx = activeSteps.length
-            else if (exchange.status === 'picked_up' || exchange.status === 'in_transit') {
-              currentStepIdx = isVolunteerDelivery ? 3 : 2
-            } else if (exchange.status === 'volunteer_assigned') {
-              currentStepIdx = 2
-            } else if (exchange.status === 'ready_for_pickup') {
-              currentStepIdx = 1
+            if (isCompleted) {
+              currentStepIdx = activeSteps.length - 1
+            } else if (isVolunteerDelivery) {
+              if (['picked_up_by_volunteer', 'picked_up', 'out_for_delivery', 'in_transit'].includes(exchange.status)) {
+                currentStepIdx = 3
+              } else if (exchange.status === 'volunteer_assigned') {
+                currentStepIdx = 2
+              } else if (exchange.status === 'searching_for_volunteer') {
+                currentStepIdx = 1
+              } else {
+                currentStepIdx = 0
+              }
             } else {
-              currentStepIdx = 0
+              if (exchange.status === 'ready_for_pickup') {
+                currentStepIdx = 1
+              } else {
+                currentStepIdx = 0
+              }
             }
 
             return (
@@ -308,7 +341,7 @@ export default function Exchanges() {
                           {donation.title || 'Food Donation'}
                         </h3>
                         <span className="text-xs text-gray-500 font-medium">
-                          • {donation.quantity} {donation.unit}
+                          • {formatQuantityUnit(donation.quantity, donation.unit)}
                         </span>
                       </div>
                       <p className="text-xs text-gray-600 mt-0.5">
@@ -349,113 +382,251 @@ export default function Exchanges() {
                   </div>
                 </div>
 
-                {/* VOLUNTEER SECTION — Addressing the UI omission */}
+                {/* VOLUNTEER SECTION */}
                 {isVolunteerDelivery && (
-                  <div className="p-4 rounded-xl bg-gray-50/70 border border-gray-200/70 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-11 h-11 rounded-full bg-[#2E7D32] text-white flex items-center justify-center font-bold text-sm shadow-xs shrink-0">
-                        {volunteer.name ? volunteer.name[0] : 'V'}
+                  exchange.status === 'searching_for_volunteer' || !exchange.volunteer ? (
+                    <div className="p-4 rounded-xl bg-amber-50/70 border border-amber-200/80 flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center font-bold text-xs shrink-0 animate-pulse">
+                        <Truck className="w-5 h-5 text-amber-600" />
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                          <h4 className="text-sm font-bold text-gray-900">
-                            {volunteer.name || 'David Kim'}
-                          </h4>
-                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
-                            <ShieldCheck className="w-3 h-3 text-[#2E7D32]" />
-                            <span>Verified Volunteer Courier</span>
+                          <h4 className="text-sm font-bold text-gray-900">Searching for Volunteer Courier...</h4>
+                          <span className="text-[10px] font-semibold bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">
+                            Awaiting Courier
                           </span>
                         </div>
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 mt-1">
-                          <span className="flex items-center gap-1 text-amber-600 font-semibold">
-                            <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
-                            <span>{volunteer.rating || 4.9}</span>
-                            <span className="text-gray-400 font-normal">
-                              ({volunteer.deliveriesCompleted || 34} deliveries)
-                            </span>
-                          </span>
-                          <span>•</span>
-                          <span className="flex items-center gap-1 font-medium text-gray-700">
-                            {getTransportIcon(volunteer.transportType)}
-                            <span className="capitalize">
-                              {volunteer.transportType || 'Car'}
-                            </span>
-                            {volunteer.vehicleNumber && (
-                              <span className="text-gray-400">
-                                ({volunteer.vehicleNumber})
-                              </span>
-                            )}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
-                      {volunteer.phone && (
-                        <a
-                          href={`tel:${volunteer.phone}`}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-xs font-semibold text-gray-700 transition-colors shadow-2xs"
-                        >
-                          <Phone className="w-3.5 h-3.5 text-gray-400" />
-                          <span>Call Volunteer</span>
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Pickup Verification Code Card */}
-                {!isCompleted && exchange.status !== 'picked_up' && exchange.status !== 'in_transit' ? (
-                  <div className="p-3.5 rounded-xl bg-gradient-to-r from-emerald-50 to-teal-50/60 border border-emerald-200/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-[#2E7D32] text-white flex items-center justify-center font-bold text-xs shadow-xs shrink-0">
-                        <KeyRound className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-gray-900">
-                            Pickup Verification Code
-                          </span>
-                          <span className="text-[10px] bg-emerald-100 text-emerald-800 font-semibold px-2 py-0.5 rounded-full">
-                            Handover Security
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-gray-600 mt-0.5">
-                          Share this 4-digit code with the {isVolunteerDelivery ? 'volunteer courier' : 'receiver'} upon pickup to confirm physical handover.
+                        <p className="text-xs text-gray-600 mt-0.5">
+                          No volunteer has accepted this delivery yet. Your pickup code will appear once an authenticated volunteer accepts.
                         </p>
                       </div>
                     </div>
-
-                    <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
-                      <div className="flex items-center tracking-widest font-mono text-base font-extrabold px-3 py-1.5 rounded-xl bg-white border border-emerald-300 text-[#2E7D32] shadow-2xs">
-                        #{exchange.pickupCode || '4821'}
+                  ) : (
+                    <div className="p-4 rounded-xl bg-gray-50/70 border border-gray-200/70 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-11 h-11 rounded-full bg-[#2E7D32] text-white flex items-center justify-center font-bold text-sm shadow-xs shrink-0">
+                          {volunteer.name ? volunteer.name[0] : (exchange.volunteer?.fullName ? exchange.volunteer.fullName[0] : 'V')}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h4 className="text-sm font-bold text-gray-900">
+                              {volunteer.name || exchange.volunteer?.fullName || 'Assigned Courier'}
+                            </h4>
+                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
+                              <ShieldCheck className="w-3 h-3 text-[#2E7D32]" />
+                              <span>Verified Volunteer Courier</span>
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 mt-1">
+                            {volunteer.rating && Number(volunteer.rating) > 0 ? (
+                              <span className="flex items-center gap-1 text-amber-600 font-semibold">
+                                <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
+                                <span>{Number(volunteer.rating).toFixed(1)}</span>
+                                <span className="text-gray-400 font-normal">
+                                  ({volunteer.deliveriesCompleted || 0} {(volunteer.deliveriesCompleted || 0) === 1 ? 'delivery' : 'deliveries'})
+                                </span>
+                              </span>
+                            ) : (
+                              <span className="flex items-center gap-1 text-gray-500 font-medium">
+                                <Star className="w-3.5 h-3.5 text-gray-300" />
+                                <span>Not rated yet</span>
+                                <span className="text-gray-400 font-normal">
+                                  ({volunteer.deliveriesCompleted || 0} {(volunteer.deliveriesCompleted || 0) === 1 ? 'delivery' : 'deliveries'})
+                                </span>
+                              </span>
+                            )}
+                            <span>•</span>
+                            <span className="flex items-center gap-1 font-medium text-gray-700">
+                              {getTransportIcon(volunteer.transportType)}
+                              <span className="capitalize">
+                                {volunteer.transportType || 'Courier'}
+                              </span>
+                            </span>
+                          </div>
+                        </div>
                       </div>
-                      <button
-                        onClick={() => handleCopyCode(exchange.pickupCode || '4821', exchange._id)}
-                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-white border border-gray-200 text-gray-700 hover:text-[#2E7D32] hover:bg-emerald-50 transition-colors shadow-2xs cursor-pointer text-xs font-semibold"
-                        title="Copy code"
-                      >
-                        {copiedCodeId === exchange._id ? (
-                          <>
-                            <Check className="w-3.5 h-3.5 text-emerald-600" />
-                            <span className="text-emerald-700">Copied</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="w-3.5 h-3.5" />
-                            <span>Copy</span>
-                          </>
+
+                      <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+                        {(volunteer.phone || exchange.courierPhone) && (
+                          isMobile ? (
+                            <a
+                              href={`tel:${volunteer.phone || exchange.courierPhone}`}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-xs font-semibold text-gray-700 transition-colors shadow-2xs"
+                              title="Call Volunteer"
+                            >
+                              <Phone className="w-3.5 h-3.5 text-gray-400" />
+                              <span>Call Volunteer</span>
+                            </a>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleCopyPhone(volunteer.phone || exchange.courierPhone, exchange._id)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-xs font-semibold text-gray-700 transition-colors shadow-2xs cursor-pointer"
+                              title="Copy volunteer's phone number"
+                            >
+                              {copiedPhoneId === exchange._id ? (
+                                <>
+                                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                  <span className="text-emerald-700 font-bold">Phone Copied!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3.5 h-3.5 text-gray-400" />
+                                  <span>Copy Phone Number</span>
+                                </>
+                              )}
+                            </button>
+                          )
                         )}
-                      </button>
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <div className="p-3 rounded-xl bg-emerald-50/70 border border-emerald-200/80 flex items-center justify-between gap-3 text-xs">
-                    <div className="flex items-center gap-2 text-emerald-800 font-semibold">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                      <span>Handover Verified & Authorized (Code #{exchange.pickupCode || '4821'})</span>
+                  )
+                )}
+
+                {/* Pickup Verification Code Card for Donor */}
+                {/* 1. Direct Pickup Flow */}
+                {!isVolunteerDelivery && (
+                  !isCompleted ? (
+                    <div className="p-4 rounded-xl bg-gradient-to-r from-emerald-50 to-teal-50/60 border border-emerald-200/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-[#2E7D32] text-white flex items-center justify-center font-bold text-xs shadow-xs shrink-0">
+                          <KeyRound className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-gray-900">
+                              Pickup Verification Code
+                            </span>
+                            <span className="text-[10px] bg-emerald-100 text-emerald-800 font-semibold px-2 py-0.5 rounded-full">
+                              Direct Pickup
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-gray-600 mt-0.5">
+                            Share this 4-digit code with the receiver upon pickup to confirm physical handover.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+                        <div className="flex items-center tracking-widest font-mono text-base font-extrabold px-3 py-1.5 rounded-xl bg-white border border-emerald-300 text-[#2E7D32] shadow-2xs">
+                          #{exchange.pickupCode}
+                        </div>
+                        <button
+                          onClick={() => handleCopyCode(exchange.pickupCode, exchange._id)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-gray-200 text-gray-700 hover:text-[#2E7D32] hover:bg-emerald-50 transition-colors shadow-2xs cursor-pointer text-xs font-semibold"
+                        >
+                          {copiedCodeId === exchange._id ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-600" />
+                              <span className="text-emerald-700 font-bold">Copied!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3.5 h-3.5" />
+                              <span>Copy Code</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
                     </div>
-                    <span className="text-[11px] text-gray-400">Security Check Passed</span>
+                  ) : (
+                    <div className="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200/80 flex items-center justify-between gap-3 text-xs">
+                      <div className="flex items-center gap-2 text-emerald-800 font-semibold">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <span>✓ Pickup Verified & Handover Completed</span>
+                      </div>
+                      <span className="text-[11px] text-emerald-700 font-medium">Completed</span>
+                    </div>
+                  )
+                )}
+
+                {/* 2. Volunteer Delivery Flow */}
+                {isVolunteerDelivery && (
+                  exchange.status === 'volunteer_assigned' && exchange.volunteer ? (
+                    <div className="p-4 rounded-xl bg-gradient-to-r from-emerald-50 to-teal-50/60 border border-emerald-200/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-[#2E7D32] text-white flex items-center justify-center font-bold text-xs shadow-xs shrink-0">
+                          <KeyRound className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-gray-900">
+                              Pickup Verification Code
+                            </span>
+                            <span className="text-[10px] bg-emerald-100 text-emerald-800 font-semibold px-2 py-0.5 rounded-full">
+                              Volunteer Handover
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-gray-600 mt-0.5">
+                            Share this 4-digit code with the volunteer courier upon pickup to confirm physical handover.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+                        <div className="flex items-center tracking-widest font-mono text-base font-extrabold px-3 py-1.5 rounded-xl bg-white border border-emerald-300 text-[#2E7D32] shadow-2xs">
+                          #{exchange.pickupCode}
+                        </div>
+                        <button
+                          onClick={() => handleCopyCode(exchange.pickupCode, exchange._id)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-gray-200 text-gray-700 hover:text-[#2E7D32] hover:bg-emerald-50 transition-colors shadow-2xs cursor-pointer text-xs font-semibold"
+                        >
+                          {copiedCodeId === exchange._id ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-600" />
+                              <span className="text-emerald-700 font-bold">Copied!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3.5 h-3.5" />
+                              <span>Copy Code</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  ) : ['picked_up_by_volunteer', 'picked_up', 'out_for_delivery', 'in_transit'].includes(exchange.status) ? (
+                    <div className="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200/80 flex items-center justify-between gap-3 text-xs">
+                      <div className="flex items-center gap-2 text-emerald-800 font-semibold">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <span>Picked Up by Volunteer ({exchange.volunteerInfo?.name || exchange.volunteer?.fullName || 'Courier'})</span>
+                      </div>
+                      <span className="text-[11px] text-emerald-700 font-medium">In Transit to Receiver</span>
+                    </div>
+                  ) : isCompleted ? (
+                    <div className="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200/80 flex items-center justify-between gap-3 text-xs">
+                      <div className="flex items-center gap-2 text-emerald-800 font-semibold">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <span>Delivered to Receiver & Completed ✓</span>
+                      </div>
+                      <span className="text-[11px] text-emerald-700 font-medium">Completed</span>
+                    </div>
+                  ) : null
+                )}
+
+                {/* Live Route Map (Leaflet & OpenStreetMap) */}
+                {!isCompleted && (
+                  <div className="space-y-2 pt-2 border-t border-gray-100">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-gray-700 uppercase tracking-wider flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                        Live Delivery Route & Map
+                      </span>
+                      <span className="text-[10px] text-gray-400 font-medium">OpenStreetMap Live</span>
+                    </div>
+                    <LiveTrackingMap
+                      pickupCoords={exchange.pickupCoords || (donation.lat ? { lat: donation.lat, lng: donation.lng } : null)}
+                      dropoffCoords={exchange.dropoffCoords}
+                      volunteerCoords={exchange.volunteerCoords}
+                      pickupAddress={exchange.pickupAddress || donation.pickupAddress || 'Donor Pickup'}
+                      dropoffAddress={exchange.dropoffAddress || 'Receiver Drop-off'}
+                      volunteerName={volunteer.name || exchange.volunteer?.fullName || 'Volunteer Courier'}
+                      volunteerTransport={volunteer.transportType || 'bicycle'}
+                      status={exchange.status}
+                      height="260px"
+                      showExternalNav={true}
+                      userRole="donor"
+                    />
                   </div>
                 )}
 
@@ -477,8 +648,8 @@ export default function Exchanges() {
 
                     {/* Step Nodes */}
                     {activeSteps.map((step, idx) => {
-                      const isPast = idx < currentStepIdx
-                      const isCurrent = idx === currentStepIdx
+                      const isPast = isCompleted ? true : idx < currentStepIdx
+                      const isCurrent = !isCompleted && idx === currentStepIdx
 
                       return (
                         <div key={step.key} className="relative z-10 flex flex-col items-center">
@@ -498,7 +669,7 @@ export default function Exchanges() {
                             )}
                           </div>
                           <span
-                            className={`text-[11px] font-semibold mt-2 text-center max-w-[80px] sm:max-w-none ${
+                            className={`text-[10px] sm:text-[11px] font-semibold mt-2 text-center max-w-[68px] sm:max-w-[90px] leading-tight ${
                               isCurrent
                                 ? 'text-[#2E7D32] font-bold'
                                 : isPast
@@ -581,49 +752,39 @@ export default function Exchanges() {
                   </div>
                 )}
 
-                {/* Action Buttons for the Donor (Pages 8 & 9 in PDF) */}
+                {/* Action Buttons for the Donor */}
                 <div className="flex items-center justify-end gap-3 pt-2">
-                  {/* When Accepted -> Donor Marks Ready */}
-                  {exchange.status === 'accepted' && (
+                  {/* For Direct Pickup: When Accepted -> Donor Marks Ready */}
+                  {!isVolunteerDelivery && exchange.status === 'accepted' && (
                     <button
                       disabled={submittingActionId === exchange._id}
                       onClick={() =>
                         handleUpdateStatus(
                           exchange._id,
                           'ready_for_pickup',
-                          'Food packaged and ready for courier pickup'
+                          'Food packaged and ready for receiver pickup'
                         )
                       }
-                      className="px-5 py-2.5 rounded-xl bg-[#2E7D32] hover:bg-[#256428] text-white text-xs font-semibold shadow-xs transition-colors"
+                      className="px-5 py-2.5 rounded-xl bg-[#2E7D32] hover:bg-[#256428] text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer"
                     >
                       {submittingActionId === exchange._id
                         ? 'Updating...'
-                        : 'Confirm Pickup Scheduled'}
+                        : 'Mark Ready for Pickup'}
                     </button>
                   )}
 
-                  {/* When Ready for Pickup -> Donor Confirms Handover to Volunteer with Code */}
-                  {exchange.status === 'ready_for_pickup' && (
-                    <button
-                      disabled={submittingActionId === exchange._id}
-                      onClick={() => handleOpenHandover(exchange)}
-                      className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#2E7D32] hover:bg-[#256428] text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer"
-                    >
-                      <KeyRound className="w-4 h-4" />
-                      <span>
-                        {isVolunteerDelivery
-                          ? `Verify Handover (Code #${exchange.pickupCode || '4821'})`
-                          : `Verify Handover (Code #${exchange.pickupCode || '4821'})`}
+                  {/* When In Transit or Picked Up -> Informational badge */}
+                  {(exchange.status === 'picked_up_by_volunteer' || exchange.status === 'picked_up' || exchange.status === 'in_transit') && (
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs font-semibold text-[#2E7D32] flex items-center gap-1.5 bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-200">
+                        <Truck className="w-3.5 h-3.5 animate-pulse" />
+                        <span>
+                          {isVolunteerDelivery
+                            ? 'Courier En Route to Receiver'
+                            : 'Food Handover Verified & Collected'}
+                        </span>
                       </span>
-                    </button>
-                  )}
-
-                  {/* When In Transit -> Status display */}
-                  {(exchange.status === 'picked_up' || exchange.status === 'in_transit') && (
-                    <span className="text-xs font-semibold text-[#2E7D32] flex items-center gap-1.5 bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-200">
-                      <Truck className="w-3.5 h-3.5 animate-pulse" />
-                      <span>Courier En Route to Receiver</span>
-                    </span>
+                    </div>
                   )}
 
                   {/* Completed -> Leave Feedback */}
@@ -709,99 +870,6 @@ export default function Exchanges() {
                   className="px-4 py-2 rounded-xl bg-[#2E7D32] hover:bg-[#256428] text-white text-xs font-semibold shadow-xs"
                 >
                   Submit Feedback
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Handover Verification Modal */}
-      {handoverModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl p-6 max-w-md w-full space-y-4 shadow-xl border border-gray-100">
-            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-emerald-50 text-[#2E7D32] flex items-center justify-center font-bold">
-                  <KeyRound className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-gray-900">Verify Pickup Handover</h3>
-                  <p className="text-xs text-gray-500">Security check for food release</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setHandoverModal(null)}
-                className="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {handoverError && (
-              <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>{handoverError}</span>
-              </div>
-            )}
-
-            <div className="p-4 rounded-xl bg-gray-50 border border-gray-100 space-y-2 text-xs">
-              <div className="flex justify-between text-gray-500">
-                <span>Food Item:</span>
-                <span className="font-semibold text-gray-800">{handoverModal.donation?.title || 'Food Donation'}</span>
-              </div>
-              <div className="flex justify-between text-gray-500">
-                <span>Courier / Recipient:</span>
-                <span className="font-semibold text-gray-800">
-                  {handoverModal.volunteerInfo?.name || handoverModal.receiverInfo?.name || 'Assigned Courier'}
-                </span>
-              </div>
-              <div className="flex justify-between text-gray-500 items-center pt-1 border-t border-gray-200/60">
-                <span>Official Verification PIN:</span>
-                <span className="font-mono font-bold text-emerald-800 text-base">#{handoverModal.pickupCode || '4821'}</span>
-              </div>
-            </div>
-
-            <form onSubmit={handleConfirmHandoverWithCode} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-gray-700 mb-1">
-                  Enter 4-Digit Pickup PIN from Courier
-                </label>
-                <input
-                  type="text"
-                  maxLength={6}
-                  required
-                  value={inputCode}
-                  onChange={(e) => setInputCode(e.target.value.replace(/[^0-9]/g, ''))}
-                  placeholder={`e.g. ${handoverModal.pickupCode || '4821'}`}
-                  className="w-full tracking-widest text-center font-mono text-xl font-bold py-2.5 px-3 rounded-xl border border-gray-200 focus:border-[#2E7D32] focus:ring-1 focus:ring-[#2E7D32] outline-hidden bg-white"
-                />
-                <p className="text-[11px] text-gray-400 text-center mt-1">
-                  The courier must provide this code at your door before you release the package.
-                </p>
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-2 border-t border-gray-100">
-                <button
-                  type="button"
-                  onClick={() => setHandoverModal(null)}
-                  className="px-4 py-2.5 rounded-xl border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50 cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={submittingActionId === handoverModal._id}
-                  className="px-5 py-2.5 rounded-xl bg-[#2E7D32] hover:bg-[#256428] text-white text-xs font-semibold shadow-xs disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
-                >
-                  {submittingActionId === handoverModal._id ? (
-                    'Verifying...'
-                  ) : (
-                    <>
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span>Confirm & Release Food</span>
-                    </>
-                  )}
                 </button>
               </div>
             </form>

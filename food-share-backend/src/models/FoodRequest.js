@@ -54,18 +54,32 @@ const foodRequestSchema = new mongoose.Schema(
     },
     requestedUnit: {
       type: String,
-      default: 'servings',
+      default: 'Servings',
     },
     deliveryPreference: {
       type: String,
       enum: ['volunteer_delivery', 'direct_pickup'],
       default: 'volunteer_delivery',
     },
+    deliveryMethod: {
+      type: String,
+      enum: ['volunteer_delivery', 'direct_pickup'],
+      default: 'volunteer_delivery',
+    },
     status: {
       type: String,
-      enum: ['pending', 'accepted', 'declined', 'cancelled'],
+      enum: ['pending', 'accepted', 'approved', 'declined', 'cancelled'],
       default: 'pending',
       index: true,
+    },
+    preferredDate: {
+      type: String,
+      default: '',
+    },
+    notes: {
+      type: String,
+      default: '',
+      trim: true,
     },
   },
   { timestamps: true }

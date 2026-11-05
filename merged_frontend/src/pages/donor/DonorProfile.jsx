@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   User,
   Shield,
@@ -14,16 +14,28 @@ import {
   FileText,
   AlertCircle,
   CheckCircle2,
+  Eye,
+  EyeOff,
+  Loader2,
+  Star,
+  MessageSquare,
 } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
 import donorService from '../../services/donorService'
+import authService from '../../services/authService'
+import { getAvatarUrl } from '../../utils/imageHelper'
 
 export default function DonorProfile() {
-  const { user } = useAuth()
-  const [activeTab, setActiveTab] = useState('info') // 'info' | 'security' | 'notifications'
+  const { user, updateUser } = useAuth()
+  const fileInputRef = useRef(null)
+  const [activeTab, setActiveTab] = useState('info') // 'info' | 'reviews' | 'security' | 'notifications'
   const [isEditing, setIsEditing] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [reviewsData, setReviewsData] = useState({ reviews: [], averageRating: 0, count: 0 })
+  const [loadingReviews, setLoadingReviews] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [uploadingPhoto, setUploadingPhoto] = useState(false)
+  const [previewUrl, setPreviewUrl] = useState(null)
   const [successMsg, setSuccessMsg] = useState('')
   const [errorMsg, setErrorMsg] = useState('')
 
@@ -34,6 +46,34 @@ export default function DonorProfile() {
   const [organizationName, setOrganizationName] = useState('')
   const [pickupAddress, setPickupAddress] = useState('')
   const [about, setAbout] = useState('')
+  const [savedProfile, setSavedProfile] = useState({
+    fullName: '',
+    phone: '',
+    organizationName: '',
+    pickupAddress: '',
+    about: '',
+  })
+  const [pendingPhotoFile, setPendingPhotoFile] = useState(null)
+
+  // Security / Password State
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [showNew, setShowNew] = useState(false)
+  const [showConfirm, setShowConfirm] = useState(false)
+  const [pwdLoading, setPwdLoading] = useState(false)
+  const [pwdError, setPwdError] = useState('')
+  const [pwdSuccess, setPwdSuccess] = useState('')
+
+  // Notification Preferences State
+  const [notificationPreferences, setNotificationPreferences] = useState({
+    newFoodRequest: true,
+    volunteerCourierUpdates: true,
+    exchangeCompleted: true,
+  })
+  const [prefsLoading, setPrefsLoading] = useState(false)
+  const [prefsSaving, setPrefsSaving] = useState(false)
+  const [prefsMessage, setPrefsMessage] = useState('')
+  const [prefsError, setPrefsError] = useState('')
 
   useEffect(() => {
     let isMounted = true
@@ -44,15 +84,27 @@ export default function DonorProfile() {
         if (isMounted && res.data) {
           const u = res.data.user || user
           const p = res.data.profile || {}
-          setFullName(u?.fullName || 'Maria Chen')
-          setEmail(u?.email || 'maria.chen@email.com')
-          setPhone(u?.phone || '+1 (415) 555-0192')
-          setOrganizationName(p?.organizationName || 'Green Community Collective')
-          setPickupAddress(p?.pickupAddress || '742 Evergreen Terrace, San Francisco, CA 94102')
-          setAbout(
-            p?.about ||
-              'Home cook and community volunteer. I love sharing surplus food from my weekend cooking sessions and garden harvest with neighbors in need.'
-          )
+          const loadedFullName = u?.fullName || 'Maria Chen'
+          const loadedEmail = u?.email || 'maria.chen@email.com'
+          const loadedPhone = u?.phone || '+1 (415) 555-0192'
+          const loadedOrg = p?.organizationName || 'Green Community Collective'
+          const loadedAddress = p?.pickupAddress || '742 Evergreen Terrace, San Francisco, CA 94102'
+          const loadedAbout = p?.about ||
+            'Home cook and community volunteer. I love sharing surplus food from my weekend cooking sessions and garden harvest with neighbors in need.'
+
+          setFullName(loadedFullName)
+          setEmail(loadedEmail)
+          setPhone(loadedPhone)
+          setOrganizationName(loadedOrg)
+          setPickupAddress(loadedAddress)
+          setAbout(loadedAbout)
+          setSavedProfile({
+            fullName: loadedFullName,
+            phone: loadedPhone,
+            organizationName: loadedOrg,
+            pickupAddress: loadedAddress,
+            about: loadedAbout,
+          })
         }
       } catch (err) {
         console.error('Failed to load profile:', err)
@@ -67,13 +119,194 @@ export default function DonorProfile() {
     }
   }, [user])
 
+  useEffect(() => {
+    let isMounted = true
+    const loadPreferences = async () => {
+      try {
+        setPrefsLoading(true)
+        const res = await donorService.getNotificationPreferences()
+        if (isMounted && res.data?.preferences) {
+          setNotificationPreferences({
+            newFoodRequest: res.data.preferences.newFoodRequest !== false,
+            volunteerCourierUpdates: res.data.preferences.volunteerCourierUpdates !== false,
+            exchangeCompleted: res.data.preferences.exchangeCompleted !== false,
+          })
+        }
+      } catch (err) {
+        console.error('Failed to load notification preferences:', err)
+      } finally {
+        if (isMounted) setPrefsLoading(false)
+      }
+    }
+
+    loadPreferences()
+    return () => {
+      isMounted = false
+    }
+  }, [])
+
+  useEffect(() => {
+    let isMounted = true
+    if (activeTab === 'reviews') {
+      const fetchReviews = async () => {
+        try {
+          setLoadingReviews(true)
+          const res = await donorService.getReviews()
+          if (isMounted && res.data) {
+            setReviewsData(res.data)
+          }
+        } catch (err) {
+          console.error('Failed to load donor reviews:', err)
+        } finally {
+          if (isMounted) setLoadingReviews(false)
+        }
+      }
+      fetchReviews()
+    }
+    return () => {
+      isMounted = false
+    }
+  }, [activeTab])
+
+  const handlePasswordUpdate = async (e) => {
+    e.preventDefault()
+    setPwdError('')
+    setPwdSuccess('')
+
+    if (!newPassword) {
+      setPwdError('New password is required.')
+      return
+    }
+    if (newPassword.length < 8) {
+      setPwdError('New password must be at least 8 characters long.')
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      setPwdError('New password and confirm password do not match.')
+      return
+    }
+
+    try {
+      setPwdLoading(true)
+      const res = await authService.changePassword({
+        newPassword,
+        confirmPassword,
+      })
+      setPwdSuccess(res.message || 'Password updated successfully!')
+      setNewPassword('')
+      setConfirmPassword('')
+      setTimeout(() => setPwdSuccess(''), 5000)
+    } catch (err) {
+      const msg = err.response?.data?.message || err.message || 'Failed to update password.'
+      setPwdError(msg)
+    } finally {
+      setPwdLoading(false)
+    }
+  }
+
+  const handleTogglePref = async (key) => {
+    const nextVal = !notificationPreferences[key]
+    const updated = {
+      ...notificationPreferences,
+      [key]: nextVal,
+    }
+    setNotificationPreferences(updated)
+    setPrefsSaving(true)
+    setPrefsMessage('')
+    setPrefsError('')
+
+    try {
+      const res = await donorService.updateNotificationPreferences(updated)
+      if (res.data?.preferences) {
+        setNotificationPreferences(res.data.preferences)
+      }
+      setPrefsMessage('Notification preferences saved.')
+      setTimeout(() => setPrefsMessage(''), 3000)
+    } catch (err) {
+      setPrefsError(err.response?.data?.message || err.message || 'Failed to update preferences.')
+      // revert on failure
+      setNotificationPreferences(notificationPreferences)
+    } finally {
+      setPrefsSaving(false)
+    }
+  }
+
+  const handlePhotoChange = (e) => {
+    // Guard: strictly ignore file selections if not in edit mode
+    if (!isEditing) return
+
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
+    if (!validTypes.includes(file.type.toLowerCase())) {
+      setErrorMsg('Invalid format. Please select a JPG, JPEG, PNG, or WebP image.')
+      return
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      setErrorMsg('File size too large. Maximum photo size is 5MB.')
+      return
+    }
+
+    setErrorMsg('')
+    if (previewUrl && previewUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(previewUrl)
+    }
+
+    const objectUrl = URL.createObjectURL(file)
+    setPreviewUrl(objectUrl)
+    setPendingPhotoFile(file)
+  }
+
+  const handleCancelEdit = () => {
+    // Discard pending photo selection and clean up temporary object URL
+    if (previewUrl && previewUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(previewUrl)
+    }
+    setPreviewUrl(null)
+    setPendingPhotoFile(null)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+
+    // Restore original profile information
+    setFullName(savedProfile.fullName)
+    setPhone(savedProfile.phone)
+    setOrganizationName(savedProfile.organizationName)
+    setPickupAddress(savedProfile.pickupAddress)
+    setAbout(savedProfile.about)
+    setErrorMsg('')
+    setIsEditing(false)
+  }
+
   const handleSave = async (e) => {
     e.preventDefault()
+    if (!isEditing) return
+
     setSuccessMsg('')
     setErrorMsg('')
     setSaving(true)
 
     try {
+      // 1. Upload pending photo if selected during edit mode
+      if (pendingPhotoFile) {
+        setUploadingPhoto(true)
+        const uploadRes = await authService.uploadAvatar(pendingPhotoFile)
+        if (uploadRes.data?.avatar && updateUser) {
+          updateUser({ avatar: uploadRes.data.avatar })
+        }
+        if (previewUrl && previewUrl.startsWith('blob:')) {
+          URL.revokeObjectURL(previewUrl)
+        }
+        setPreviewUrl(null)
+        setPendingPhotoFile(null)
+        if (fileInputRef.current) {
+          fileInputRef.current.value = ''
+        }
+      }
+
+      // 2. Save profile information
       await donorService.updateProfile({
         fullName,
         phone,
@@ -81,12 +314,22 @@ export default function DonorProfile() {
         pickupAddress,
         about,
       })
+
+      setSavedProfile({
+        fullName,
+        phone,
+        organizationName,
+        pickupAddress,
+        about,
+      })
+
       setSuccessMsg('Profile updated successfully!')
       setIsEditing(false)
       setTimeout(() => setSuccessMsg(''), 4000)
     } catch (err) {
-      setErrorMsg(err.message || 'Failed to update profile.')
+      setErrorMsg(err.response?.data?.message || err.message || 'Failed to update profile.')
     } finally {
+      setUploadingPhoto(false)
       setSaving(false)
     }
   }
@@ -100,6 +343,7 @@ export default function DonorProfile() {
 
   const tabs = [
     { key: 'info', label: 'Profile Info', icon: User },
+    { key: 'reviews', label: 'Reviews', icon: Star },
     { key: 'security', label: 'Security', icon: Shield },
     { key: 'notifications', label: 'Notifications', icon: Bell },
   ]
@@ -157,28 +401,54 @@ export default function DonorProfile() {
           {/* Top user chip & photo (Page 11 in PDF) */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-gray-100">
             <div className="flex items-center gap-4">
-              <div className="w-16 h-16 rounded-full bg-[#1F2937] text-white flex items-center justify-center font-bold text-xl shadow-xs shrink-0">
-                {initials}
+              <div className="w-16 h-16 rounded-full bg-[#1F2937] text-white flex items-center justify-center font-bold text-xl shadow-xs shrink-0 overflow-hidden border-2 border-[#2E7D32]/20">
+                {previewUrl || user?.avatar ? (
+                  <img
+                    src={previewUrl || getAvatarUrl(user?.avatar)}
+                    alt={fullName}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  initials
+                )}
               </div>
               <div>
                 <h2 className="text-lg font-bold text-gray-900">{fullName}</h2>
                 <p className="text-xs text-gray-500 mt-0.5">
                   Donor • Member since Oct 2025
                 </p>
-                <button
-                  type="button"
-                  onClick={() => alert('Photo upload dialog: Choose JPG, PNG or WEBP.')}
-                  className="mt-2 text-xs font-semibold text-[#2E7D32] hover:text-[#256428] flex items-center gap-1.5"
-                >
-                  <Camera className="w-3.5 h-3.5" />
-                  <span>Upload Photo</span>
-                </button>
+                {isEditing && (
+                  <>
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      onChange={handlePhotoChange}
+                      accept="image/jpeg,image/png,image/webp"
+                      className="hidden"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploadingPhoto || saving}
+                      className="mt-2 text-xs font-semibold text-[#2E7D32] hover:text-[#256428] flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <Camera className="w-3.5 h-3.5" />
+                      <span>{pendingPhotoFile ? 'Change Selected Photo' : 'Upload Photo'}</span>
+                    </button>
+                    {pendingPhotoFile && (
+                      <p className="text-[11px] text-emerald-700 font-medium mt-1">
+                        Photo selected. Click &quot;Save Profile Changes&quot; to apply.
+                      </p>
+                    )}
+                  </>
+                )}
               </div>
             </div>
 
             <button
-              onClick={() => setIsEditing(!isEditing)}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#2E7D32] hover:bg-[#256428] text-white text-xs font-semibold shadow-xs transition-colors self-start sm:self-auto"
+              type="button"
+              onClick={isEditing ? handleCancelEdit : () => setIsEditing(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#2E7D32] hover:bg-[#256428] text-white text-xs font-semibold shadow-xs transition-colors self-start sm:self-auto cursor-pointer"
             >
               <Edit3 className="w-3.5 h-3.5" />
               <span>{isEditing ? 'Cancel Edit' : 'Edit Profile'}</span>
@@ -308,17 +578,18 @@ export default function DonorProfile() {
               <div className="flex justify-end gap-3 pt-3 border-t border-gray-100">
                 <button
                   type="button"
-                  onClick={() => setIsEditing(false)}
-                  className="px-4 py-2 rounded-xl border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+                  onClick={handleCancelEdit}
+                  className="px-4 py-2 rounded-xl border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={saving}
-                  className="px-5 py-2 rounded-xl bg-[#2E7D32] hover:bg-[#256428] text-white text-xs font-semibold shadow-xs disabled:opacity-50"
+                  disabled={saving || uploadingPhoto}
+                  className="px-5 py-2 rounded-xl bg-[#2E7D32] hover:bg-[#256428] text-white text-xs font-semibold shadow-xs disabled:opacity-50 cursor-pointer flex items-center gap-2"
                 >
-                  {saving ? 'Saving...' : 'Save Profile Changes'}
+                  {(saving || uploadingPhoto) && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>{saving || uploadingPhoto ? 'Saving...' : 'Save Profile Changes'}</span>
                 </button>
               </div>
             )}
@@ -326,104 +597,263 @@ export default function DonorProfile() {
         </div>
       )}
 
+      {/* TAB: Reviews */}
+      {activeTab === 'reviews' && (
+        <div className="bg-white rounded-2xl border border-gray-100 p-6 sm:p-8 shadow-xs space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-gray-100">
+            <div>
+              <h3 className="text-sm sm:text-base font-bold text-gray-900">Community Reviews & Feedback</h3>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Ratings and reviews submitted by receivers after completing food donations.
+              </p>
+            </div>
+            <div className="flex items-center gap-3 bg-emerald-50 px-4 py-2 rounded-xl border border-emerald-100 shrink-0">
+              <div className="flex items-center gap-1 text-amber-500">
+                <Star className="w-5 h-5 fill-amber-400 text-amber-400" />
+                <span className="text-base font-extrabold text-gray-900">
+                  {reviewsData.averageRating ? reviewsData.averageRating.toFixed(1) : '5.0'}
+                </span>
+              </div>
+              <span className="text-xs font-semibold text-emerald-800">
+                ({reviewsData.count || 0} {reviewsData.count === 1 ? 'review' : 'reviews'})
+              </span>
+            </div>
+          </div>
+
+          {loadingReviews ? (
+            <div className="py-12 text-center text-gray-400">
+              <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-[#2E7D32]" />
+              <p className="text-xs">Loading reviews...</p>
+            </div>
+          ) : !reviewsData.reviews || reviewsData.reviews.length === 0 ? (
+            <div className="py-12 text-center text-gray-500">
+              <MessageSquare className="w-10 h-10 text-gray-300 mx-auto mb-2" />
+              <p className="text-sm font-bold text-gray-700">No Reviews Received Yet</p>
+              <p className="text-xs text-gray-400 mt-1 max-w-sm mx-auto">
+                When community receivers claim your surplus food listings and submit ratings, their feedback will appear here.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {reviewsData.reviews.map((rev) => (
+                <div
+                  key={rev._id}
+                  className="p-4 rounded-xl border border-gray-100 bg-gray-50/50 hover:bg-gray-50 transition-colors space-y-2"
+                >
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center">
+                        {[1, 2, 3, 4, 5].map((s) => (
+                          <Star
+                            key={s}
+                            className={`w-3.5 h-3.5 ${
+                              s <= rev.rating ? 'fill-amber-400 text-amber-400' : 'text-gray-200'
+                            }`}
+                          />
+                        ))}
+                      </div>
+                      <span className="text-xs font-bold text-gray-900">{rev.reviewerName}</span>
+                    </div>
+                    <span className="text-[11px] text-gray-400 font-medium">
+                      {new Date(rev.createdAt).toLocaleDateString('en-US', {
+                        month: 'short',
+                        day: 'numeric',
+                        year: 'numeric',
+                      })}
+                    </span>
+                  </div>
+
+                  <p className="text-xs text-gray-700 font-normal">
+                    {rev.comment || 'No comment provided.'}
+                  </p>
+
+                  <div className="text-[11px] text-gray-400 pt-1 border-t border-gray-100">
+                    Food Listing: <span className="font-semibold text-gray-600">{rev.donationTitle}</span> · Order #{rev.orderNo}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* TAB 2: Security */}
       {activeTab === 'security' && (
         <div className="bg-white rounded-2xl border border-gray-100 p-6 sm:p-8 shadow-xs space-y-6">
           <div>
-            <h3 className="text-sm font-bold text-gray-900">Account Security</h3>
+            <h3 className="text-sm font-bold text-gray-900">Change Password</h3>
             <p className="text-xs text-gray-500 mt-0.5">
-              Update password and review session controls.
+              Update your account password to keep your FoodShare account secure.
             </p>
           </div>
 
-          <div className="space-y-4 max-w-md">
+          {pwdSuccess && (
+            <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>{pwdSuccess}</span>
+            </div>
+          )}
+
+          {pwdError && (
+            <div className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+              <span>{pwdError}</span>
+            </div>
+          )}
+
+          <form onSubmit={handlePasswordUpdate} className="space-y-4 max-w-md">
+            {/* New Password */}
             <div>
               <label className="block text-xs font-semibold text-gray-700 mb-1">
-                Current Password
+                New Password <span className="text-red-500">*</span>
               </label>
-              <input
-                type="password"
-                placeholder="••••••••"
-                className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-xs focus:border-[#2E7D32] outline-hidden"
-              />
+              <div className="relative">
+                <input
+                  type={showNew ? 'text' : 'password'}
+                  required
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="At least 8 characters"
+                  className="w-full pl-4 pr-10 py-2.5 rounded-xl border border-gray-200 text-xs focus:border-[#2E7D32] focus:ring-1 focus:ring-[#2E7D32] outline-hidden transition-all"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowNew(!showNew)}
+                  className="absolute right-3 top-2.5 text-gray-400 hover:text-gray-600"
+                  tabIndex={-1}
+                >
+                  {showNew ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
 
+            {/* Confirm New Password */}
             <div>
               <label className="block text-xs font-semibold text-gray-700 mb-1">
-                New Password
+                Confirm New Password <span className="text-red-500">*</span>
               </label>
-              <input
-                type="password"
-                placeholder="••••••••"
-                className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-xs focus:border-[#2E7D32] outline-hidden"
-              />
+              <div className="relative">
+                <input
+                  type={showConfirm ? 'text' : 'password'}
+                  required
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="Re-enter new password"
+                  className="w-full pl-4 pr-10 py-2.5 rounded-xl border border-gray-200 text-xs focus:border-[#2E7D32] focus:ring-1 focus:ring-[#2E7D32] outline-hidden transition-all"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowConfirm(!showConfirm)}
+                  className="absolute right-3 top-2.5 text-gray-400 hover:text-gray-600"
+                  tabIndex={-1}
+                >
+                  {showConfirm ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
 
-            <button
-              onClick={() => alert('Password update request sent.')}
-              className="px-4 py-2 rounded-xl bg-[#2E7D32] text-white text-xs font-semibold hover:bg-[#256428] transition-colors"
-            >
-              Update Password
-            </button>
-          </div>
+            <div className="pt-2">
+              <button
+                type="submit"
+                disabled={pwdLoading}
+                className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-[#2E7D32] text-white text-xs font-semibold hover:bg-[#256428] transition-colors shadow-xs disabled:opacity-50 cursor-pointer"
+              >
+                {pwdLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{pwdLoading ? 'Updating Password...' : 'Update Password'}</span>
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
       {/* TAB 3: Notifications */}
       {activeTab === 'notifications' && (
         <div className="bg-white rounded-2xl border border-gray-100 p-6 sm:p-8 shadow-xs space-y-6">
-          <div>
-            <h3 className="text-sm font-bold text-gray-900">Notification Preferences</h3>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Choose what notifications you receive about requests and couriers.
-            </p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-bold text-gray-900">Notification Preferences</h3>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Choose what notifications you receive about food requests and volunteer courier actions.
+              </p>
+            </div>
+            {prefsSaving && (
+              <span className="text-[11px] text-gray-400 flex items-center gap-1.5 font-medium">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#2E7D32]" />
+                Saving...
+              </span>
+            )}
           </div>
 
-          <div className="space-y-4">
-            <label className="flex items-center justify-between p-4 rounded-xl border border-gray-100 bg-gray-50/50 cursor-pointer">
-              <div>
-                <p className="text-xs font-bold text-gray-900">New Food Requests</p>
-                <p className="text-[11px] text-gray-500">
-                  Notify when a receiver requests surplus food from your listings
-                </p>
-              </div>
-              <input
-                type="checkbox"
-                defaultChecked
-                className="w-4 h-4 text-[#2E7D32] rounded-sm focus:ring-[#2E7D32]"
-              />
-            </label>
+          {prefsMessage && (
+            <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>{prefsMessage}</span>
+            </div>
+          )}
 
-            <label className="flex items-center justify-between p-4 rounded-xl border border-gray-100 bg-gray-50/50 cursor-pointer">
-              <div>
-                <p className="text-xs font-bold text-gray-900">
-                  Volunteer Courier Updates
-                </p>
-                <p className="text-[11px] text-gray-500">
-                  Notify when a volunteer courier accepts, arrives, or picks up food
-                </p>
-              </div>
-              <input
-                type="checkbox"
-                defaultChecked
-                className="w-4 h-4 text-[#2E7D32] rounded-sm focus:ring-[#2E7D32]"
-              />
-            </label>
+          {prefsError && (
+            <div className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+              <span>{prefsError}</span>
+            </div>
+          )}
 
-            <label className="flex items-center justify-between p-4 rounded-xl border border-gray-100 bg-gray-50/50 cursor-pointer">
-              <div>
-                <p className="text-xs font-bold text-gray-900">Exchange Completed</p>
-                <p className="text-[11px] text-gray-500">
-                  Receive a recap when meals are confirmed delivered to the receiver
-                </p>
-              </div>
-              <input
-                type="checkbox"
-                defaultChecked
-                className="w-4 h-4 text-[#2E7D32] rounded-sm focus:ring-[#2E7D32]"
-              />
-            </label>
-          </div>
+          {prefsLoading ? (
+            <div className="py-8 flex justify-center items-center text-xs text-gray-400 gap-2">
+              <Loader2 className="w-4 h-4 animate-spin text-[#2E7D32]" />
+              Loading preferences...
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {/* Option 1: New Food Requests */}
+              <label className="flex items-center justify-between p-4 rounded-xl border border-gray-100 hover:border-gray-200 bg-gray-50/50 cursor-pointer transition-colors">
+                <div>
+                  <p className="text-xs font-bold text-gray-900">New Food Request</p>
+                  <p className="text-[11px] text-gray-500">
+                    Notify when a receiver requests surplus food from your listings
+                  </p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={!!notificationPreferences.newFoodRequest}
+                  onChange={() => handleTogglePref('newFoodRequest')}
+                  className="w-4 h-4 text-[#2E7D32] accent-[#2E7D32] rounded-sm focus:ring-[#2E7D32] cursor-pointer"
+                />
+              </label>
+
+              {/* Option 2: Volunteer Courier Updates */}
+              <label className="flex items-center justify-between p-4 rounded-xl border border-gray-100 hover:border-gray-200 bg-gray-50/50 cursor-pointer transition-colors">
+                <div>
+                  <p className="text-xs font-bold text-gray-900">Volunteer Courier Updates</p>
+                  <p className="text-[11px] text-gray-500">
+                    Notify when a volunteer courier accepts, arrives, or picks up food
+                  </p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={!!notificationPreferences.volunteerCourierUpdates}
+                  onChange={() => handleTogglePref('volunteerCourierUpdates')}
+                  className="w-4 h-4 text-[#2E7D32] accent-[#2E7D32] rounded-sm focus:ring-[#2E7D32] cursor-pointer"
+                />
+              </label>
+
+              {/* Option 3: Exchange Completed */}
+              <label className="flex items-center justify-between p-4 rounded-xl border border-gray-100 hover:border-gray-200 bg-gray-50/50 cursor-pointer transition-colors">
+                <div>
+                  <p className="text-xs font-bold text-gray-900">Exchange Completed</p>
+                  <p className="text-[11px] text-gray-500">
+                    Receive a recap when meals are confirmed delivered to the receiver
+                  </p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={!!notificationPreferences.exchangeCompleted}
+                  onChange={() => handleTogglePref('exchangeCompleted')}
+                  className="w-4 h-4 text-[#2E7D32] accent-[#2E7D32] rounded-sm focus:ring-[#2E7D32] cursor-pointer"
+                />
+              </label>
+            </div>
+          )}
         </div>
       )}
     </div>

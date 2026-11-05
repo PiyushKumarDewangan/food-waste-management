@@ -11,7 +11,9 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.js'
 import authRoutes from './routes/authRoutes.js'
 import donorRoutes from './routes/donorRoutes.js'
 import receiverRoutes from './routes/receiverRoutes.js'
+import receiverDashboardRoutes from './routes/receiverDashboardRoutes.js'
 import volunteerRoutes from './routes/volunteerRoutes.js'
+import notificationRoutes from './routes/notificationRoutes.js'
 
 const app = express()
 
@@ -58,7 +60,9 @@ app.get('/api/health', (req, res) => {
 app.use('/api/auth', authRoutes)
 app.use('/api/donors', donorRoutes)
 app.use('/api/receivers', receiverRoutes)
+app.use('/api/receiver', receiverDashboardRoutes)
 app.use('/api/volunteers', volunteerRoutes)
+app.use('/api/notifications', notificationRoutes)
 
 // --- 404 + centralized error handler (must be registered LAST) ---------------
 app.use(notFoundHandler)//Runs when no route matches

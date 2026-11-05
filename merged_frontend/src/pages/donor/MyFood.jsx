@@ -17,7 +17,8 @@ import {
 } from 'lucide-react'
 import donorService from '../../services/donorService'
 import { getFoodImageUrl, handleImageError } from '../../utils/imageHelper'
-import { getExpiryCountdown } from '../../utils/dateHelper'
+import { getDonationDisplayStatus, formatDateIST } from '../../utils/dateHelper'
+import { formatQuantityUnit } from '../../utils/unitHelper'
 
 const CATEGORIES = [
   'All Categories',
@@ -32,15 +33,24 @@ const CATEGORIES = [
 
 export default function MyFood() {
   const navigate = useNavigate()
+  const [now, setNow] = useState(Date.now())
   const [activeTab, setActiveTab] = useState('all')
   const [donations, setDonations] = useState([])
-  const [counts, setCounts] = useState({ all: 0, available: 0, requested: 0, claimed: 0, completed: 0 })
+  const [counts, setCounts] = useState({ all: 0, available: 0, requested: 0, claimed: 0, completed: 0, expired: 0 })
   const [loading, setLoading] = useState(true)
   const [editingItem, setEditingItem] = useState(null)
   const [deleteConfirmId, setDeleteConfirmId] = useState(null)
   const [editFormData, setEditFormData] = useState({})
   const [searchTerm, setSearchTerm] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('All Categories')
+
+  // Live timer tick every 30 seconds for automatic real-time countdown updates
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNow(Date.now())
+    }, 30000)
+    return () => clearInterval(timer)
+  }, [])
 
   const loadDonations = async (tab = activeTab) => {
     try {
@@ -92,47 +102,22 @@ export default function MyFood() {
     }
   }
 
-  const getStatusBadge = (status) => {
-    switch (status?.toLowerCase()) {
-      case 'available':
-        return (
-          <span className="px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-            Available
-          </span>
-        )
-      case 'requested':
-        return (
-          <span className="px-3 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">
-            Requested
-          </span>
-        )
-      case 'claimed':
-        return (
-          <span className="px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
-            Claimed
-          </span>
-        )
-      case 'completed':
-        return (
-          <span className="px-3 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700 border border-gray-200">
-            Completed
-          </span>
-        )
-      default:
-        return (
-          <span className="px-3 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">
-            {status}
-          </span>
-        )
-    }
+  const getStatusBadge = (item) => {
+    const displayInfo = getDonationDisplayStatus(item, now)
+    return (
+      <span className={`px-3 py-1 rounded-full text-xs font-semibold ${displayInfo.badgeClass}`}>
+        {displayInfo.badgeText}
+      </span>
+    )
   }
 
   const tabs = [
     { key: 'all', label: `All (${counts.all || donations.length})` },
-    { key: 'available', label: 'Available' },
-    { key: 'requested', label: 'Requested' },
-    { key: 'claimed', label: 'Claimed' },
-    { key: 'completed', label: 'Completed' },
+    { key: 'available', label: `Available (${counts.available ?? 0})` },
+    { key: 'requested', label: `Requested (${counts.requested ?? 0})` },
+    { key: 'claimed', label: `Claimed (${counts.claimed ?? 0})` },
+    { key: 'completed', label: `Completed (${counts.completed ?? 0})` },
+    { key: 'expired', label: `Expired (${counts.expired ?? 0})` },
   ]
 
   const filteredDonations = donations.filter((item) => {
@@ -294,7 +279,7 @@ export default function MyFood() {
       ) : (
         <div className="space-y-4">
           {filteredDonations.map((item) => {
-            const expiry = getExpiryCountdown(item.bestBefore)
+            const displayInfo = getDonationDisplayStatus(item, now)
 
             return (
               <div
@@ -318,20 +303,20 @@ export default function MyFood() {
                   <div className="min-w-0 space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <h3 className="text-base font-bold text-gray-900 truncate">{item.title}</h3>
-                      <span className="md:hidden">{getStatusBadge(item.status)}</span>
-                      {expiry && (
+                      <span className="md:hidden">{getStatusBadge(item)}</span>
+                      {displayInfo.showCountdown && displayInfo.countdownLabel && (
                         <span
-                          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] border font-semibold ${expiry.badgeClass}`}
-                          title={`Expires: ${new Date(item.bestBefore).toLocaleString()}`}
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] border font-semibold ${displayInfo.expiryBadgeClass}`}
+                          title={`Expires: ${formatDateIST(item.bestBefore || item.expiresAt)}`}
                         >
-                          <span className={`w-1.5 h-1.5 rounded-full ${expiry.dotClass}`} />
-                          <span>{expiry.label}</span>
+                          <span className={`w-1.5 h-1.5 rounded-full ${displayInfo.expiryDotClass}`} />
+                          <span>{displayInfo.countdownLabel}</span>
                         </span>
                       )}
                     </div>
 
                     <p className="text-xs font-semibold text-[#2E7D32]">
-                      {item.quantity} {item.unit}
+                      {formatQuantityUnit(item.quantity, item.unit)}
                     </p>
 
                     <p className="text-xs text-gray-500 flex items-center gap-1.5 truncate">
@@ -340,22 +325,16 @@ export default function MyFood() {
                     </p>
 
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-gray-400 pt-1">
+                      {displayInfo.status !== 'completed' && (
+                        <>
+                          <span>
+                            Expires: {formatDateIST(item.bestBefore || item.expiresAt)}
+                          </span>
+                          <span>•</span>
+                        </>
+                      )}
                       <span>
-                        Expires:{' '}
-                        {new Date(item.bestBefore).toLocaleDateString('en-US', {
-                          month: 'short',
-                          day: 'numeric',
-                          year: 'numeric',
-                        })}
-                      </span>
-                      <span>•</span>
-                      <span>
-                        Created:{' '}
-                        {new Date(item.createdAt).toLocaleDateString('en-US', {
-                          month: 'short',
-                          day: 'numeric',
-                          year: 'numeric',
-                        })}
+                        Created: {formatDateIST(item.createdAt)}
                       </span>
                     </div>
 
@@ -372,7 +351,7 @@ export default function MyFood() {
 
               {/* Right: Status badge & Actions */}
               <div className="flex md:flex-col items-center md:items-end justify-between md:justify-center gap-3 pt-3 md:pt-0 border-t md:border-t-0 border-gray-100 shrink-0">
-                <div className="hidden md:block">{getStatusBadge(item.status)}</div>
+                <div className="hidden md:block">{getStatusBadge(item)}</div>
 
                 <div className="flex items-center gap-2">
                   <button

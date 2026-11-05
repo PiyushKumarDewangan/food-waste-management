@@ -84,3 +84,18 @@ export const resetPasswordValidator = [
   body('token').notEmpty().withMessage('Reset token is required.'),
   body('newPassword').isLength({ min: 8 }).withMessage('Password must be at least 8 characters.'),
 ]
+
+export const changePasswordValidator = [
+  body('newPassword')
+    .isLength({ min: 8 })
+    .withMessage('New password must be at least 8 characters.'),
+  body('confirmPassword')
+    .notEmpty()
+    .withMessage('Please confirm your new password.')
+    .custom((value, { req }) => {
+      if (value !== req.body.newPassword) {
+        throw new Error('New password and confirm password do not match.')
+      }
+      return true
+    }),
+]

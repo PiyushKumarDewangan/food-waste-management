@@ -9,17 +9,16 @@ import {
   ChevronRight,
   MapPin,
   Eye,
-  CheckCircle2,
-  Calendar,
-  AlertCircle,
 } from 'lucide-react'
 import donorService from '../../services/donorService'
 import { getFoodImageUrl, handleImageError } from '../../utils/imageHelper'
-import { getExpiryCountdown } from '../../utils/dateHelper'
+import { getDonationDisplayStatus, formatDateIST } from '../../utils/dateHelper'
+import { formatQuantityUnit } from '../../utils/unitHelper'
 
 export default function DonorDashboard() {
   const navigate = useNavigate()
   const [loading, setLoading] = useState(true)
+  const [now, setNow] = useState(Date.now())
   const [stats, setStats] = useState({
     activeListings: 0,
     pendingRequests: 0,
@@ -27,6 +26,14 @@ export default function DonorDashboard() {
     mealsShared: 0,
   })
   const [recentDonations, setRecentDonations] = useState([])
+
+  // Live timer tick every 30 seconds for automatic real-time countdown updates
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNow(Date.now())
+    }, 30000)
+    return () => clearInterval(timer)
+  }, [])
 
   useEffect(() => {
     let isMounted = true
@@ -55,42 +62,6 @@ export default function DonorDashboard() {
       isMounted = false
     }
   }, [])
-
-  // Helper for status badge styling
-  const getStatusBadge = (status) => {
-    switch (status?.toLowerCase()) {
-      case 'available':
-        return (
-          <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/60">
-            Available
-          </span>
-        )
-      case 'requested':
-        return (
-          <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200/60">
-            Requested
-          </span>
-        )
-      case 'claimed':
-        return (
-          <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200/60">
-            Claimed
-          </span>
-        )
-      case 'completed':
-        return (
-          <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700 border border-gray-200">
-            Completed
-          </span>
-        )
-      default:
-        return (
-          <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">
-            {status}
-          </span>
-        )
-    }
-  }
 
   return (
     <div className="space-y-8">
@@ -196,94 +167,63 @@ export default function DonorDashboard() {
           </div>
         ) : (
           <div className="divide-y divide-gray-100">
-            {recentDonations.map((item) => (
-              <div
-                key={item._id}
-                className="py-4 first:pt-0 last:pb-0 flex items-center justify-between gap-4 flex-wrap sm:flex-nowrap hover:bg-gray-50/50 p-2 rounded-xl transition-colors"
-              >
-                <div className="flex items-center gap-4 min-w-0">
-                  <img
-                    src={getFoodImageUrl(item.imageUrl, item.category)}
-                    alt={item.title}
-                    onError={(e) => handleImageError(e, item.category)}
-                    className="w-14 h-14 rounded-xl object-cover border border-gray-100 shadow-2xs shrink-0"
-                  />
-                  <div className="min-w-0">
-                    <h3 className="text-sm font-bold text-gray-900 truncate">{item.title}</h3>
-                    <p className="text-xs text-gray-500 mt-0.5">
-                      {item.quantity} {item.unit} •{' '}
-                      {item.createdAt
-                        ? new Date(item.createdAt).toLocaleDateString('en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                          })
-                        : 'Recently'}
-                    </p>
-                    <div className="flex flex-wrap items-center gap-2 mt-1">
-                      <p className="text-[11px] text-gray-400 flex items-center gap-1 truncate">
-                        <MapPin className="w-3 h-3 shrink-0" />
-                        <span>{item.pickupAddress}</span>
+            {recentDonations.map((item) => {
+              const displayInfo = getDonationDisplayStatus(item, now)
+
+              return (
+                <div
+                  key={item._id}
+                  className="py-4 first:pt-0 last:pb-0 flex items-center justify-between gap-4 flex-wrap sm:flex-nowrap hover:bg-gray-50/50 p-2 rounded-xl transition-colors"
+                >
+                  <div className="flex items-center gap-4 min-w-0">
+                    <img
+                      src={getFoodImageUrl(item.imageUrl, item.category)}
+                      alt={item.title}
+                      onError={(e) => handleImageError(e, item.category)}
+                      className="w-14 h-14 rounded-xl object-cover border border-gray-100 shadow-2xs shrink-0"
+                    />
+                    <div className="min-w-0">
+                      <h3 className="text-sm font-bold text-gray-900 truncate">{item.title}</h3>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        {formatQuantityUnit(item.quantity, item.unit)} •{' '}
+                        {item.createdAt ? formatDateIST(item.createdAt) : 'Recently'}
                       </p>
-                      {(() => {
-                        const expiry = getExpiryCountdown(item.bestBefore)
-                        if (!expiry) return null
-                        return (
+                      <div className="flex flex-wrap items-center gap-2 mt-1">
+                        <p className="text-[11px] text-gray-400 flex items-center gap-1 truncate">
+                          <MapPin className="w-3 h-3 shrink-0" />
+                          <span>{item.pickupAddress}</span>
+                        </p>
+                        {displayInfo.showCountdown && displayInfo.countdownLabel && (
                           <span
-                            className={`inline-flex items-center gap-1 px-2 py-0.2 rounded-full text-[10px] border font-semibold ${expiry.badgeClass}`}
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] border font-semibold ${displayInfo.expiryBadgeClass}`}
                           >
-                            <span className={`w-1 h-1 rounded-full ${expiry.dotClass}`} />
-                            <span>{expiry.label}</span>
+                            <span className={`w-1 h-1 rounded-full ${displayInfo.expiryDotClass}`} />
+                            <span>{displayInfo.countdownLabel}</span>
                           </span>
-                        )
-                      })()}
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <div className="flex items-center gap-3 shrink-0">
-                  {getStatusBadge(item.status)}
-                  <button
-                    onClick={() => navigate(`/donor/food/${item._id}`)}
-                    className="p-2 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
-                    title="View Details"
-                  >
-                    <Eye className="w-4 h-4" />
-                  </button>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <span
+                      className={`px-2.5 py-1 rounded-full text-xs font-semibold ${displayInfo.badgeClass}`}
+                    >
+                      {displayInfo.badgeText}
+                    </span>
+                    <button
+                      onClick={() => navigate(`/donor/food/${item._id}`)}
+                      className="p-2 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors cursor-pointer"
+                      title="View Details"
+                    >
+                      <Eye className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
-      </div>
-
-      {/* Quick Actions (Page 1 in PDF) */}
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-xs p-6 space-y-4">
-        <h2 className="text-sm font-bold text-gray-900 tracking-tight uppercase text-gray-400">
-          Quick Actions
-        </h2>
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            onClick={() => navigate('/donor/add-food')}
-            className="flex items-center gap-2 bg-[#2E7D32] hover:bg-[#256428] text-white px-5 py-2.5 rounded-xl text-sm font-semibold shadow-xs transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Add New Food</span>
-          </button>
-          <button
-            onClick={() => navigate('/donor/requests')}
-            className="flex items-center gap-2 bg-amber-50 hover:bg-amber-100/80 text-amber-800 border border-amber-200/80 px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors"
-          >
-            <Clock className="w-4 h-4" />
-            <span>Review Requests ({stats.pendingRequests})</span>
-          </button>
-          <button
-            onClick={() => navigate('/donor/exchanges')}
-            className="flex items-center gap-2 bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors"
-          >
-            <ArrowLeftRight className="w-4 h-4" />
-            <span>Track Exchanges</span>
-          </button>
-        </div>
       </div>
     </div>
   )

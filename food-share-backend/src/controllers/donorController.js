@@ -1,3 +1,4 @@
+import mongoose from 'mongoose'
 import { asyncHandler } from '../utils/asyncHandler.js'
 import { ApiResponse } from '../utils/ApiResponse.js'
 import { ApiError } from '../utils/ApiError.js'
@@ -7,6 +8,17 @@ import { FoodDonation } from '../models/FoodDonation.js'
 import { FoodRequest } from '../models/FoodRequest.js'
 import { Exchange } from '../models/Exchange.js'
 import { VolunteerProfile } from '../models/VolunteerProfile.js'
+import { ReceiverProfile } from '../models/ReceiverProfile.js'
+import { Notification } from '../models/Notification.js'
+import { syncVolunteerRating } from './volunteerController.js'
+
+const safeCreateNotification = async (payload) => {
+  try {
+    await Notification.create(payload)
+  } catch (err) {
+    console.error('Failed to create notification:', err.message)
+  }
+}
 
 // GET /api/donors/me — fetch logged-in donor profile & stats
 export const getMyDonorProfile = asyncHandler(async (req, res) => {
@@ -94,6 +106,36 @@ export const getMyDonorStats = asyncHandler(async (req, res) => {
 // GET /api/donors/me/donations — list donations posted by this donor
 export const getMyDonations = asyncHandler(async (req, res) => {
   const { status } = req.query
+  const now = new Date()
+
+  // 1. Any donation that has an associated completed exchange is completed (Priority 1)
+  const completedExchanges = await Exchange.find({
+    donor: req.user._id,
+    status: 'completed',
+  }).select('donation')
+  const completedDonationIds = completedExchanges.map((ex) => ex.donation).filter(Boolean)
+
+  if (completedDonationIds.length > 0) {
+    await FoodDonation.updateMany(
+      { _id: { $in: completedDonationIds }, status: { $ne: 'completed' } },
+      { $set: { status: 'completed' } }
+    )
+  }
+
+  // 2. Auto-mark any available donation whose expiry timestamp has passed as expired
+  await FoodDonation.updateMany(
+    {
+      donor: req.user._id,
+      status: 'available',
+      _id: { $nin: completedDonationIds },
+      $or: [
+        { bestBefore: { $lte: now } },
+        { expiresAt: { $lte: now } },
+      ],
+    },
+    { $set: { status: 'expired' } }
+  )
+
   const filter = { donor: req.user._id }
 
   if (status && status !== 'all') {
@@ -107,6 +149,7 @@ export const getMyDonations = asyncHandler(async (req, res) => {
     requested: await FoodDonation.countDocuments({ donor: req.user._id, status: 'requested' }),
     claimed: await FoodDonation.countDocuments({ donor: req.user._id, status: 'claimed' }),
     completed: await FoodDonation.countDocuments({ donor: req.user._id, status: 'completed' }),
+    expired: await FoodDonation.countDocuments({ donor: req.user._id, status: 'expired' }),
   }
 
   return res.status(200).json(
@@ -116,17 +159,103 @@ export const getMyDonations = asyncHandler(async (req, res) => {
 
 // GET /api/donors/me/donations/:id — get single donation with interested receivers
 export const getDonationById = asyncHandler(async (req, res) => {
-  const donation = await FoodDonation.findOne({ _id: req.params.id, donor: req.user._id })
+  let donation = await FoodDonation.findOne({ _id: req.params.id, donor: req.user._id })
   if (!donation) throw new ApiError(404, 'Food donation not found.')
+
+  const now = new Date()
+  const completedExchange = await Exchange.findOne({ donation: donation._id, status: 'completed' })
+  if (completedExchange && donation.status !== 'completed') {
+    donation.status = 'completed'
+    await donation.save()
+  } else if (
+    donation.status === 'available' &&
+    ((donation.bestBefore && donation.bestBefore <= now) || (donation.expiresAt && donation.expiresAt <= now))
+  ) {
+    donation.status = 'expired'
+    await donation.save()
+  }
 
   const requests = await FoodRequest.find({ donation: donation._id })
     .populate('receiver', 'fullName email phone')
     .sort({ createdAt: -1 })
 
+  // Authoritatively calculate completed exchanges count for each receiver
+  const receiverIds = [
+    ...new Set(
+      requests
+        .map((r) => r.receiver?._id || r.receiver)
+        .filter(Boolean)
+        .map((id) => id.toString())
+    ),
+  ]
+
+  const completedExchangesCounts = await Exchange.aggregate([
+    {
+      $match: {
+        receiver: { $in: receiverIds.map((id) => new mongoose.Types.ObjectId(id)) },
+        status: { $in: ['completed', 'delivered'] },
+      },
+    },
+    {
+      $group: {
+        _id: '$receiver',
+        count: { $sum: 1 },
+      },
+    },
+  ])
+
+  const countsMap = {}
+  completedExchangesCounts.forEach((item) => {
+    countsMap[item._id.toString()] = item.count
+  })
+
+  const formattedRequests = requests.map((reqDoc) => {
+    const doc = reqDoc.toObject()
+    const rId = (doc.receiver?._id || doc.receiver)?.toString()
+    doc.receiverExchangesCount = countsMap[rId] || 0
+    return doc
+  })
+
   return res.status(200).json(
-    new ApiResponse(200, { donation, interestedReceivers: requests }, 'Donation details fetched.')
+    new ApiResponse(200, { donation, interestedReceivers: formattedRequests }, 'Donation details fetched.')
   )
 })
+
+const formatBackendUnit = (u) => {
+  if (!u || typeof u !== 'string') return 'Servings'
+  const clean = u.trim().toLowerCase()
+  switch (clean) {
+    case 'servings':
+    case 'serving':
+      return 'Servings'
+    case 'kg':
+    case 'kgs':
+      return 'Kg'
+    case 'liters':
+    case 'liter':
+    case 'litres':
+    case 'litre':
+    case 'l':
+      return 'Liters'
+    case 'items':
+    case 'item':
+      return 'Items'
+    case 'boxes':
+    case 'box':
+      return 'Boxes'
+    case 'bags':
+    case 'bag':
+      return 'Bags'
+    case 'bottles':
+    case 'bottle':
+      return 'Bottles'
+    case 'loaves':
+    case 'loaf':
+      return 'Loaves'
+    default:
+      return u.charAt(0).toUpperCase() + u.slice(1)
+  }
+}
 
 // POST /api/donors/me/donations — create a new food donation listing
 export const createDonation = asyncHandler(async (req, res) => {
@@ -135,7 +264,7 @@ export const createDonation = asyncHandler(async (req, res) => {
     category,
     description,
     quantity,
-    unit = 'servings',
+    unit = 'Servings',
     bestBefore,
     pickupAddress,
     pickupWindow,
@@ -147,6 +276,27 @@ export const createDonation = asyncHandler(async (req, res) => {
   if (!title || !category || !description || !quantity || !bestBefore || !pickupAddress || !pickupWindow) {
     throw new ApiError(400, 'All required donation fields must be provided.')
   }
+
+  // Calculate reliable, timezone-safe UTC expiry timestamp
+  const now = new Date()
+  let expiryDate
+  if (typeof bestBefore === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(bestBefore.trim())) {
+    const [y, m, d] = bestBefore.trim().split('-').map(Number)
+    expiryDate = new Date(Date.UTC(y, m - 1, d, now.getUTCHours(), now.getUTCMinutes(), now.getUTCSeconds()))
+    if (expiryDate <= now) {
+      // Default to 24h duration from exact creation time
+      expiryDate = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+    }
+  } else if (bestBefore) {
+    expiryDate = new Date(bestBefore)
+    if (isNaN(expiryDate.getTime()) || expiryDate <= now) {
+      expiryDate = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+    }
+  } else {
+    expiryDate = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+  }
+
+  const normalizedUnit = formatBackendUnit(unit)
 
   let finalImageUrl = imageUrl
   if (req.file) {
@@ -160,6 +310,7 @@ export const createDonation = asyncHandler(async (req, res) => {
       'Fresh Produce': 'https://images.unsplash.com/photo-1592924357228-91a4daadcfea?w=800&auto=format&fit=crop&q=80',
       'Dairy & Eggs': 'https://images.unsplash.com/photo-1586771107445-d3ca888129ff?w=800&auto=format&fit=crop&q=80',
       'Packaged & Canned': 'https://images.unsplash.com/photo-1584473457406-6240486418e9?w=800&auto=format&fit=crop&q=80',
+      'Beverages & Other': 'https://images.unsplash.com/photo-1513558161293-cdaf765ed2fd?w=800&auto=format&fit=crop&q=80',
       'Beverages': 'https://images.unsplash.com/photo-1513558161293-cdaf765ed2fd?w=800&auto=format&fit=crop&q=80',
       'Other': 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=800&auto=format&fit=crop&q=80',
     }
@@ -172,21 +323,30 @@ export const createDonation = asyncHandler(async (req, res) => {
     ? tags.split(',').map((t) => t.trim()).filter(Boolean)
     : []
 
+  const donorProfile = await DonorProfile.findOne({ user: req.user._id })
+
   const donation = await FoodDonation.create({
     donor: req.user._id,
+    donorName: req.user.fullName || 'Donor',
+    donorOrganization: donorProfile?.organizationName || req.user.fullName || 'Donor Organization',
     title: title.trim(),
     category,
     description: description.trim(),
     quantity: Number(quantity),
-    unit: unit.trim(),
-    bestBefore: new Date(bestBefore),
+    servings: Number(quantity),
+    unit: normalizedUnit,
+    bestBefore: expiryDate,
+    expiresAt: expiryDate,
     pickupAddress: pickupAddress.trim(),
     pickupWindow: pickupWindow.trim(),
     pickupInstructions: (pickupInstructions || '').trim(),
     imageUrl: finalImageUrl,
     tags: parsedTags,
+    deliveryOptions: ['volunteer', 'direct'],
     status: 'available',
     foodSafetyAccepted: true,
+    ...(req.body.lat != null && !isNaN(Number(req.body.lat)) && { lat: Number(req.body.lat) }),
+    ...(req.body.lng != null && !isNaN(Number(req.body.lng)) && { lng: Number(req.body.lng) }),
   })
 
   await DonorProfile.findOneAndUpdate(
@@ -242,9 +402,46 @@ export const getMyRequests = asyncHandler(async (req, res) => {
   }
 
   const requests = await FoodRequest.find(filter)
-    .populate('donation', 'title category quantity unit imageUrl pickupAddress pickupWindow status')
+    .populate('donation', 'title category quantity unit imageUrl pickupAddress pickupWindow status expiresAt bestBefore')
     .populate('receiver', 'fullName email phone')
     .sort({ createdAt: -1 })
+
+  // Authoritatively calculate completed exchanges count for each receiver
+  const receiverIds = [
+    ...new Set(
+      requests
+        .map((r) => r.receiver?._id || r.receiver)
+        .filter(Boolean)
+        .map((id) => id.toString())
+    ),
+  ]
+
+  const completedExchangesCounts = await Exchange.aggregate([
+    {
+      $match: {
+        receiver: { $in: receiverIds.map((id) => new mongoose.Types.ObjectId(id)) },
+        status: { $in: ['completed', 'delivered'] },
+      },
+    },
+    {
+      $group: {
+        _id: '$receiver',
+        count: { $sum: 1 },
+      },
+    },
+  ])
+
+  const countsMap = {}
+  completedExchangesCounts.forEach((item) => {
+    countsMap[item._id.toString()] = item.count
+  })
+
+  const formattedRequests = requests.map((reqDoc) => {
+    const doc = reqDoc.toObject()
+    const rId = (doc.receiver?._id || doc.receiver)?.toString()
+    doc.receiverExchangesCount = countsMap[rId] || 0
+    return doc
+  })
 
   const counts = {
     all: await FoodRequest.countDocuments({ donor: req.user._id }),
@@ -254,13 +451,13 @@ export const getMyRequests = asyncHandler(async (req, res) => {
   }
 
   return res.status(200).json(
-    new ApiResponse(200, { requests, counts }, 'Requests fetched successfully.')
+    new ApiResponse(200, { requests: formattedRequests, counts }, 'Requests fetched successfully.')
   )
 })
 
 // PATCH /api/donors/me/requests/:id — accept or decline a request
 export const respondToRequest = asyncHandler(async (req, res) => {
-  const { action, deliveryType = 'volunteer_delivery' } = req.body
+  const { action } = req.body
   if (!['accept', 'decline'].includes(action)) {
     throw new ApiError(400, "Action must be 'accept' or 'decline'.")
   }
@@ -268,91 +465,198 @@ export const respondToRequest = asyncHandler(async (req, res) => {
   const request = await FoodRequest.findOne({ _id: req.params.id, donor: req.user._id }).populate('donation')
   if (!request) throw new ApiError(404, 'Request not found.')
 
-  if (request.status !== 'pending') {
-    throw new ApiError(400, `This request has already been ${request.status}.`)
-  }
-
   if (action === 'decline') {
+    if (request.status === 'declined') {
+      throw new ApiError(400, 'This request has already been declined.')
+    }
     request.status = 'declined'
     await request.save()
+
+    // Send notification to receiver safely
+    await safeCreateNotification({
+      user: request.receiver,
+      title: 'Request Declined',
+      message: `Your request for ${request.requestedQuantity} ${request.requestedUnit} of ${request.donation?.title || 'food donation'} was declined.`,
+      type: 'request',
+      link: '/receiver/requests',
+    })
+
     return res.status(200).json(new ApiResponse(200, { request }, 'Request declined.'))
   }
 
-  // Accept action:
-  request.status = 'accepted'
-  await request.save()
-
-  // Update donation status
-  await FoodDonation.findByIdAndUpdate(request.donation._id, { status: 'claimed' })
-
-  // Find an available volunteer if deliveryType === 'volunteer_delivery'
-  let volunteerUser = null
-  let volunteerInfo = {
-    name: 'Assigned Courier',
-    phone: '',
-    rating: 5.0,
-    transportType: 'car',
-    vehicleNumber: '',
-    deliveriesCompleted: 0,
-  }
-
-  if (deliveryType === 'volunteer_delivery') {
-    const volunteerUsers = await User.find({ role: 'volunteer', status: 'active' })
-    if (volunteerUsers.length > 0) {
-      volunteerUser = volunteerUsers[0]
-      const vProfile = await VolunteerProfile.findOne({ user: volunteerUser._id })
-      volunteerInfo = {
-        name: volunteerUser.fullName,
-        phone: volunteerUser.phone,
-        rating: 4.9,
-        transportType: vProfile?.transportType || 'car',
-        vehicleNumber: vProfile?.vehicleNumber || '',
-        deliveriesCompleted: vProfile?.totalDeliveriesCompleted || 0,
-      }
+  // Prevent accepting expired food
+  if (request.donation) {
+    const now = new Date()
+    const isPastExpiry =
+      (request.donation.bestBefore && request.donation.bestBefore <= now) ||
+      (request.donation.expiresAt && request.donation.expiresAt <= now)
+    if (isPastExpiry && request.donation.status !== 'completed') {
+      request.donation.status = 'expired'
+      await request.donation.save()
+      throw new ApiError(400, 'Cannot accept a request for a food donation that has expired.')
     }
   }
 
-  // Create an exchange with Volunteer integration
-  const exchange = await Exchange.create({
+  // Prevent duplicate exchanges on concurrent or repeated calls
+  const existingExchange = await Exchange.findOne({ request: request._id })
+  if (existingExchange) {
+    return res.status(200).json(
+      new ApiResponse(200, { request, exchange: existingExchange }, 'Exchange already scheduled.')
+    )
+  }
+
+  if (request.status === 'declined') {
+    throw new ApiError(400, 'Cannot accept a request that was already declined.')
+  }
+
+  // 1. Read authoritative delivery method from the receiver's request
+  const deliveryType =
+    request.deliveryPreference === 'direct_pickup' || request.deliveryMethod === 'direct_pickup'
+      ? 'direct_pickup'
+      : 'volunteer_delivery'
+
+  // Mark request as accepted
+  request.status = 'accepted'
+  await request.save()
+
+  // Update donation status to claimed
+  if (request.donation) {
+    await FoodDonation.findByIdAndUpdate(request.donation._id, { status: 'claimed' })
+  }
+
+  const pickupCode = Math.floor(1000 + Math.random() * 9000).toString()
+
+  // Fetch receiver's authoritative completed exchanges count
+  const receiverCompletedCount = await Exchange.countDocuments({
+    receiver: request.receiver,
+    status: { $in: ['completed', 'delivered'] },
+  })
+
+  const receiverProfile = await ReceiverProfile.findOne({ user: request.receiver })
+
+  let exchangeData = {
     donation: request.donation._id,
     request: request._id,
     donor: req.user._id,
     receiver: request.receiver,
     receiverInfo: {
-      name: request.receiverName,
-      phone: request.receiverPhone,
-      organization: request.receiverOrganization,
-      exchangesCount: request.receiverExchangesCount,
+      name: request.receiverName || 'Receiver',
+      phone: request.receiverPhone || '',
+      organization: request.receiverOrganization || '',
+      exchangesCount: receiverCompletedCount,
     },
     deliveryType,
-    volunteer: volunteerUser ? volunteerUser._id : null,
-    volunteerInfo,
-    volunteerStatus: deliveryType === 'volunteer_delivery' ? 'assigned' : 'not_needed',
-    pickupCode: Math.floor(1000 + Math.random() * 9000).toString(),
-    status: 'accepted',
-    pickupAddress: request.donation.pickupAddress,
-    pickupWindow: request.donation.pickupWindow,
-    timeline: [
+    pickupCode,
+    deliveryCode: null,
+    pickupAddress: request.donation?.pickupAddress || 'Donor Address',
+    pickupWindow: request.donation?.pickupWindow || '',
+    dropoffAddress: receiverProfile?.dropoffAddress || receiverProfile?.organizationAddress || 'Receiver Address',
+    pickupCoords: {
+      lat: request.donation?.lat ?? null,
+      lng: request.donation?.lng ?? null,
+    },
+    dropoffCoords: {
+      lat: receiverProfile?.lat ?? null,
+      lng: receiverProfile?.lng ?? null,
+    },
+    volunteerCoords: null,
+  }
+
+  let notificationPayload = null
+
+  if (deliveryType === 'direct_pickup') {
+    // Direct Receiver Pickup:
+    // - Exactly ONE code (pickupCode). deliveryCode is null.
+    // - No volunteer involved.
+    // - Ready for pickup by receiver.
+    exchangeData.volunteer = null
+    exchangeData.volunteerInfo = {
+      name: '',
+      phone: '',
+      rating: 0,
+      transportType: 'walking',
+      vehicleNumber: '',
+      deliveriesCompleted: 0,
+    }
+    exchangeData.volunteerStatus = 'not_needed'
+    exchangeData.status = 'ready_for_pickup'
+    exchangeData.stage = 2
+    exchangeData.timeline = [
       {
         step: 'accepted',
-        title: 'Request Accepted',
+        title: 'Request Approved (Direct Receiver Pickup)',
         time: new Date(),
         actor: 'Donor',
-        note: `Donor accepted request for ${request.requestedQuantity} ${request.requestedUnit}`,
+        note: `Donor approved direct receiver collection for ${request.requestedQuantity} ${request.requestedUnit}.`,
       },
-      ...(deliveryType === 'volunteer_delivery' && volunteerUser
-        ? [
-            {
-              step: 'volunteer_assigned',
-              title: `Volunteer Assigned (${volunteerInfo.name})`,
-              time: new Date(),
-              actor: 'Volunteer',
-              note: `${volunteerInfo.name} assigned via ${volunteerInfo.transportType}`,
-            },
-          ]
-        : []),
-    ],
-  })
+      {
+        step: 'ready_for_pickup',
+        title: 'Ready for Collection',
+        time: new Date(),
+        actor: 'Donor',
+        note: `Food is packaged and ready for collection at ${request.donation?.pickupAddress} during window ${request.donation?.pickupWindow}.`,
+      },
+    ]
+
+    // Do NOT include the pickup code in the notification — receiver must ask donor in person!
+    notificationPayload = {
+      user: request.receiver,
+      title: 'Request Approved for Direct Pickup',
+      message: `Your request for ${request.donation?.title} has been approved! Please collect it at ${request.donation?.pickupAddress}. Ask donor for pickup code upon arrival.`,
+      type: 'order',
+      link: '/receiver/pickups',
+    }
+  } else {
+    // Volunteer Courier Delivery:
+    // - TWO DIFFERENT codes:
+    //   1. pickupCode: Donor -> Volunteer
+    //   2. deliveryCode: Volunteer -> Receiver
+    // - DO NOT assign any default or fake volunteer!
+    // - Status starts as 'searching_for_volunteer' with volunteerId = null
+    let deliveryCode = Math.floor(1000 + Math.random() * 9000).toString()
+    while (deliveryCode === pickupCode) {
+      deliveryCode = Math.floor(1000 + Math.random() * 9000).toString()
+    }
+    exchangeData.deliveryCode = deliveryCode
+
+    exchangeData.volunteer = null
+    exchangeData.volunteerInfo = {
+      name: '',
+      phone: '',
+      rating: 0,
+      transportType: 'other',
+      vehicleNumber: '',
+      deliveriesCompleted: 0,
+    }
+    exchangeData.volunteerStatus = 'searching_volunteer'
+    exchangeData.status = 'searching_for_volunteer'
+    exchangeData.stage = 1
+    exchangeData.timeline = [
+      {
+        step: 'accepted',
+        title: 'Donor Approved (Searching for Volunteer Courier)',
+        time: new Date(),
+        actor: 'Donor',
+        note: `Donor approved delivery for ${request.requestedQuantity} ${request.requestedUnit}. System is waiting for an available volunteer courier to accept.`,
+      },
+    ]
+
+    notificationPayload = {
+      user: request.receiver,
+      title: 'Request Approved - Finding Courier',
+      message: `Donor approved your request for ${request.donation?.title}. We are searching for an available volunteer courier.`,
+      type: 'order',
+      link: '/receiver/pickups',
+    }
+  }
+
+  // Create exchange record FIRST to guarantee database state
+  const exchange = await Exchange.create(exchangeData)
+
+  // Send in-app notification safely without blocking the workflow
+  if (notificationPayload) {
+    await safeCreateNotification(notificationPayload)
+  }
 
   return res.status(200).json(
     new ApiResponse(200, { request, exchange }, 'Request accepted and exchange scheduled.')
@@ -364,8 +668,19 @@ export const getMyExchanges = asyncHandler(async (req, res) => {
   const { status } = req.query
   const filter = { donor: req.user._id }
 
+  const inProgressStatuses = [
+    'accepted',
+    'ready_for_pickup',
+    'searching_for_volunteer',
+    'volunteer_assigned',
+    'picked_up_by_volunteer',
+    'picked_up',
+    'out_for_delivery',
+    'in_transit',
+  ]
+
   if (status === 'in_progress') {
-    filter.status = { $in: ['accepted', 'ready_for_pickup', 'volunteer_assigned', 'picked_up', 'in_transit'] }
+    filter.status = { $in: inProgressStatuses }
   } else if (status === 'completed') {
     filter.status = 'completed'
   }
@@ -376,10 +691,42 @@ export const getMyExchanges = asyncHandler(async (req, res) => {
     .populate('volunteer', 'fullName email phone')
     .sort({ createdAt: -1 })
 
-  // Ensure all exchanges have a 4-digit pickup code
+  const volunteerIds = exchanges
+    .filter((e) => e.volunteer)
+    .map((e) => e.volunteer._id || e.volunteer)
+
+  const volProfiles = volunteerIds.length > 0
+    ? await VolunteerProfile.find({ user: { $in: volunteerIds } })
+    : []
+  const profileMap = new Map(volProfiles.map((p) => [p.user.toString(), p]))
+
+  // Ensure codes and volunteer live statistics are properly assigned
   for (const ex of exchanges) {
+    let changed = false
     if (!ex.pickupCode) {
       ex.pickupCode = Math.floor(1000 + Math.random() * 9000).toString()
+      changed = true
+    }
+    if (ex.deliveryType === 'volunteer_delivery' && !ex.deliveryCode) {
+      let code2 = Math.floor(1000 + Math.random() * 9000).toString()
+      while (code2 === ex.pickupCode) {
+        code2 = Math.floor(1000 + Math.random() * 9000).toString()
+      }
+      ex.deliveryCode = code2
+      changed = true
+    }
+
+    if (ex.volunteer) {
+      const volUserKey = (ex.volunteer._id || ex.volunteer).toString()
+      const volProf = profileMap.get(volUserKey)
+      if (volProf) {
+        if (!ex.volunteerInfo) ex.volunteerInfo = {}
+        ex.volunteerInfo.rating = volProf.rating || 0
+        ex.volunteerInfo.deliveriesCompleted = volProf.totalDeliveriesCompleted || 0
+      }
+    }
+
+    if (changed) {
       await ex.save()
     }
   }
@@ -388,7 +735,7 @@ export const getMyExchanges = asyncHandler(async (req, res) => {
     all: await Exchange.countDocuments({ donor: req.user._id }),
     in_progress: await Exchange.countDocuments({
       donor: req.user._id,
-      status: { $in: ['accepted', 'ready_for_pickup', 'volunteer_assigned', 'picked_up', 'in_transit'] },
+      status: { $in: inProgressStatuses },
     }),
     completed: await Exchange.countDocuments({ donor: req.user._id, status: 'completed' }),
   }
@@ -407,10 +754,14 @@ export const updateExchangeStatus = asyncHandler(async (req, res) => {
   const validStatuses = [
     'accepted',
     'ready_for_pickup',
+    'searching_for_volunteer',
     'volunteer_assigned',
+    'picked_up_by_volunteer',
     'picked_up',
+    'out_for_delivery',
     'in_transit',
     'completed',
+    'cancelled',
   ]
   if (!validStatuses.includes(status)) {
     throw new ApiError(400, 'Invalid exchange status.')
@@ -421,12 +772,17 @@ export const updateExchangeStatus = asyncHandler(async (req, res) => {
     exchange.pickupCode = Math.floor(1000 + Math.random() * 9000).toString()
   }
 
-  // If marking as picked_up and verificationCode is provided, validate it
-  if (status === 'picked_up' && verificationCode) {
-    if (verificationCode.trim() !== exchange.pickupCode) {
+  // If marking as picked_up, validate 4-digit verification code
+  if (status === 'picked_up') {
+    const cleanEntered = (verificationCode || '').toString().replace(/[^0-9]/g, '')
+    const cleanExpected = (exchange.pickupCode || '').toString().replace(/[^0-9]/g, '')
+
+    if (cleanExpected && cleanEntered !== cleanExpected) {
       throw new ApiError(400, `Invalid verification code. The 4-digit code must match #${exchange.pickupCode}.`)
     }
-    exchange.handoverCodeEntered = verificationCode.trim()
+    exchange.handoverCodeEntered = cleanEntered || exchange.pickupCode
+    exchange.handoverConfirmed = true
+    exchange.stage = 3
   }
 
   exchange.status = status
@@ -438,8 +794,8 @@ export const updateExchangeStatus = asyncHandler(async (req, res) => {
     exchange.donorConfirmedReady = true
     stepTitle = 'Ready for Pickup'
     actor = 'Donor'
+    exchange.stage = 2
   } else if (status === 'picked_up') {
-    exchange.handoverConfirmed = true
     stepTitle =
       exchange.deliveryType === 'volunteer_delivery'
         ? `Picked Up by Volunteer (${exchange.volunteerInfo?.name || 'Volunteer'})`
@@ -448,7 +804,11 @@ export const updateExchangeStatus = asyncHandler(async (req, res) => {
   } else if (status === 'completed') {
     stepTitle = 'Exchange Completed & Delivered'
     actor = 'Receiver'
-    await FoodDonation.findByIdAndUpdate(exchange.donation._id, { status: 'completed' })
+    exchange.stage = 5
+    if (exchange.donation) {
+      const donationId = exchange.donation._id || exchange.donation
+      await FoodDonation.findByIdAndUpdate(donationId, { status: 'completed' })
+    }
     await DonorProfile.findOneAndUpdate({ user: req.user._id }, { $inc: { totalMealsShared: 1 } })
   }
 
@@ -462,6 +822,22 @@ export const updateExchangeStatus = asyncHandler(async (req, res) => {
 
   await exchange.save()
 
+  // Notify receiver safely without blocking
+  if (exchange.receiver) {
+    const isDirect = exchange.deliveryType === 'direct_pickup'
+    await safeCreateNotification({
+      user: exchange.receiver,
+      title: status === 'picked_up'
+        ? (isDirect ? 'Food Handover Verified' : 'Courier Picked Up Food')
+        : (status === 'completed' ? 'Exchange Completed' : 'Order Update'),
+      message: status === 'picked_up'
+        ? (isDirect ? 'The donor verified your code and completed food handover.' : `${exchange.volunteerInfo?.name || 'Volunteer courier'} picked up the food from the donor.`)
+        : `Exchange status updated to ${status}.`,
+      type: 'order',
+      link: '/receiver/pickups',
+    })
+  }
+
   return res.status(200).json(new ApiResponse(200, { exchange }, 'Exchange status updated successfully.'))
 })
 
@@ -471,13 +847,28 @@ export const submitExchangeFeedback = asyncHandler(async (req, res) => {
   const exchange = await Exchange.findOne({ _id: req.params.id, donor: req.user._id })
   if (!exchange) throw new ApiError(404, 'Exchange not found.')
 
-  exchange.feedback = {
-    rating: Number(rating) || 5,
-    comment: comment || '',
+  const numRating = Number(rating) || 5
+  const feedbackData = {
+    rating: numRating,
+    comment: (comment || '').trim(),
     submittedAt: new Date(),
   }
 
+  exchange.donorFeedback = feedbackData
+  exchange.feedback = {
+    ...feedbackData,
+    submittedBy: req.user._id,
+    role: 'donor',
+  }
+
   await exchange.save()
+
+  if (exchange.volunteer) {
+    await syncVolunteerRating(exchange.volunteer).catch((err) => {
+      console.error('Failed to sync volunteer rating from donor feedback:', err.message)
+    })
+  }
+
   return res.status(200).json(new ApiResponse(200, { exchange }, 'Feedback submitted.'))
 })
 
@@ -516,3 +907,54 @@ export const getMyImpactStats = asyncHandler(async (req, res) => {
     )
   )
 })
+
+// GET /api/donors/me/reviews — get receiver reviews for this donor
+export const getDonorReviews = asyncHandler(async (req, res) => {
+  const exchanges = await Exchange.find({
+    donor: req.user._id,
+    status: { $in: ['completed', 'delivered'] },
+    $or: [
+      { 'receiverToDonorFeedback.rating': { $gt: 0 } },
+      { 'feedback.rating': { $gt: 0 }, 'feedback.role': 'receiver', deliveryType: 'direct_pickup' },
+    ],
+  })
+    .populate('donation', 'title category quantity unit')
+    .populate('receiver', 'fullName organizationName')
+    .sort({ updatedAt: -1 })
+
+  const reviews = []
+  exchanges.forEach((ex) => {
+    const fb = ex.receiverToDonorFeedback?.rating ? ex.receiverToDonorFeedback : ex.feedback
+    if (fb?.rating && fb.rating > 0) {
+      reviews.push({
+        _id: `${ex._id}_donorReview`,
+        exchangeId: ex._id,
+        orderNo: ex.orderNo || `FD-${ex._id.toString().slice(-6).toUpperCase()}`,
+        rating: fb.rating,
+        comment: (fb.comment || '').trim(),
+        submittedAt: fb.submittedAt || ex.deliveredAt || ex.updatedAt,
+        donationTitle: ex.donation?.title || 'Food Donation',
+        category: ex.donation?.category || 'Cooked Meals',
+        reviewerName: ex.receiver?.fullName || ex.receiver?.organizationName || 'Receiver Partner',
+      })
+    }
+  })
+
+  reviews.sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt))
+  const avgRating = reviews.length > 0
+    ? Number((reviews.reduce((acc, r) => acc + r.rating, 0) / reviews.length).toFixed(1))
+    : 0
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        reviews,
+        totalCount: reviews.length,
+        averageRating: avgRating,
+      },
+      'Donor reviews fetched successfully.'
+    )
+  )
+})
+

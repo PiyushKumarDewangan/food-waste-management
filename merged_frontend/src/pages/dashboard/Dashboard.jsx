@@ -12,6 +12,16 @@ export default function Dashboard() {
     return <Navigate to="/donor/dashboard" replace />
   }
 
+  // Seamlessly route receivers to their complete Receiver Dashboard
+  if (user?.role === 'receiver') {
+    return <Navigate to="/receiver/dashboard" replace />
+  }
+
+  // Seamlessly route volunteers to their Volunteer Dashboard
+  if (user?.role === 'volunteer') {
+    return <Navigate to="/volunteer" replace />
+  }
+
   const handleLogout = async () => {
     await logout()
     navigate('/login')

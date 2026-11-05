@@ -18,14 +18,17 @@ const foodDonationSchema = new mongoose.Schema(
       required: true,
       enum: [
         'Cooked Meal',
+        'Cooked Meals',
         'Bakery',
         'Fresh Produce',
         'Dairy & Eggs',
         'Packaged & Canned',
+        'Packaged Goods',
+        'Beverages & Other',
         'Beverages',
         'Other',
       ],
-      default: 'Cooked Meal',
+      default: 'Cooked Meals',
       index: true,
     },
     description: {
@@ -41,7 +44,7 @@ const foodDonationSchema = new mongoose.Schema(
     unit: {
       type: String,
       required: true,
-      default: 'servings',
+      default: 'Servings',
     },
     bestBefore: {
       type: Date,
@@ -68,7 +71,7 @@ const foodDonationSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['available', 'requested', 'claimed', 'completed', 'cancelled'],
+      enum: ['available', 'requested', 'claimed', 'completed', 'cancelled', 'expired'],
       default: 'available',
       index: true,
     },
@@ -86,6 +89,43 @@ const foodDonationSchema = new mongoose.Schema(
     interestedCount: {
       type: Number,
       default: 0,
+    },
+    // Extended fields for Receiver dashboard
+    dietary: [
+      {
+        type: String,
+        trim: true,
+      },
+    ],
+    deliveryOptions: {
+      type: [String],
+      default: ['volunteer', 'direct'],
+    },
+    expiresAt: {
+      type: Date,
+      default: null,
+    },
+    servings: {
+      type: Number,
+      default: null,
+    },
+    donorName: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    donorOrganization: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    lat: {
+      type: Number,
+      default: null,
+    },
+    lng: {
+      type: Number,
+      default: null,
     },
   },
   { timestamps: true }

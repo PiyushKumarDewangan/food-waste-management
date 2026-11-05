@@ -15,7 +15,8 @@ import {
 } from 'lucide-react'
 import donorService from '../../services/donorService'
 import { getFoodImageUrl, handleImageError } from '../../utils/imageHelper'
-import { getExpiryCountdown } from '../../utils/dateHelper'
+import { getExpiryCountdown, formatDateIST, getDonationDisplayStatus } from '../../utils/dateHelper'
+import { formatQuantityUnit } from '../../utils/unitHelper'
 
 export default function DonationDetail() {
   const { id } = useParams()
@@ -23,9 +24,10 @@ export default function DonationDetail() {
   const [loading, setLoading] = useState(true)
   const [donation, setDonation] = useState(null)
   const [interestedReceivers, setInterestedReceivers] = useState([])
-  const [actionModal, setActionModal] = useState(null) // { request, action: 'accept' | 'decline' }
-  const [deliveryType, setDeliveryType] = useState('volunteer_delivery')
+  const [declineModalRequest, setDeclineModalRequest] = useState(null)
   const [submitting, setSubmitting] = useState(false)
+  const [toastMessage, setToastMessage] = useState('')
+  const [errorMessage, setErrorMessage] = useState('')
 
   const loadData = async () => {
     try {
@@ -46,22 +48,37 @@ export default function DonationDetail() {
     loadData()
   }, [id])
 
-  const handleAction = async () => {
-    if (!actionModal) return
+  const handleAcceptRequest = async (req) => {
     try {
       setSubmitting(true)
-      await donorService.respondToRequest(
-        actionModal.request._id,
-        actionModal.action,
-        deliveryType
-      )
-      setActionModal(null)
+      setErrorMessage('')
+      await donorService.respondToRequest(req._id, 'accept')
+      setToastMessage('Request accepted! Scheduling exchange...')
       await loadData()
-      if (actionModal.action === 'accept') {
+      setTimeout(() => {
         navigate('/donor/exchanges')
-      }
+      }, 600)
     } catch (err) {
-      alert(err.message || 'Action failed. Please try again.')
+      setErrorMessage(err.message || 'Action failed. Please try again.')
+      setTimeout(() => setErrorMessage(''), 5000)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleDeclineRequest = async () => {
+    if (!declineModalRequest) return
+    try {
+      setSubmitting(true)
+      setErrorMessage('')
+      await donorService.respondToRequest(declineModalRequest._id, 'decline')
+      setDeclineModalRequest(null)
+      setToastMessage('Request declined.')
+      setTimeout(() => setToastMessage(''), 4000)
+      await loadData()
+    } catch (err) {
+      setErrorMessage(err.message || 'Action failed. Please try again.')
+      setTimeout(() => setErrorMessage(''), 5000)
     } finally {
       setSubmitting(false)
     }
@@ -90,7 +107,23 @@ export default function DonationDetail() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
+    <div className="max-w-4xl mx-auto space-y-6 relative">
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="fixed top-20 right-6 z-50 flex items-center gap-2 px-4 py-3 bg-[#2E7D32] text-white rounded-xl shadow-xl text-xs font-semibold animate-in slide-in-from-top-4">
+          <CheckCircle2 className="w-4 h-4 shrink-0" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
+      {/* Error Banner */}
+      {errorMessage && (
+        <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+          <span>{errorMessage}</span>
+        </div>
+      )}
+
       {/* Back button (Page 5 in PDF) */}
       <div>
         <button
@@ -119,17 +152,37 @@ export default function DonationDetail() {
             <span className="px-3 py-1 rounded-full text-xs font-bold bg-black/60 backdrop-blur-md text-white">
               {donation.category}
             </span>
-            <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-600/90 backdrop-blur-md text-white capitalize">
-              {donation.status}
-            </span>
             {(() => {
-              const expiry = getExpiryCountdown(donation.bestBefore)
-              if (!expiry) return null
+              const displayInfo = getDonationDisplayStatus(donation)
+
+              if (displayInfo.status === 'completed') {
+                return (
+                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-gray-700/90 backdrop-blur-md text-white">
+                    Completed
+                  </span>
+                )
+              }
+
+              if (displayInfo.status === 'expired') {
+                return (
+                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-red-600/90 backdrop-blur-md text-white">
+                    Expired
+                  </span>
+                )
+              }
+
               return (
-                <span className="px-3 py-1 rounded-full text-xs font-bold bg-white/95 backdrop-blur-md shadow-xs text-gray-900 flex items-center gap-1.5">
-                  <span className={`w-2 h-2 rounded-full ${expiry.dotClass}`} />
-                  <span>{expiry.label}</span>
-                </span>
+                <>
+                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-600/90 backdrop-blur-md text-white capitalize">
+                    {displayInfo.badgeText}
+                  </span>
+                  {displayInfo.showCountdown && displayInfo.countdownLabel && (
+                    <span className="px-3 py-1 rounded-full text-xs font-bold bg-white/95 backdrop-blur-md shadow-xs text-gray-900 flex items-center gap-1.5">
+                      <span className={`w-2 h-2 rounded-full ${displayInfo.expiryDotClass}`} />
+                      <span>{displayInfo.countdownLabel}</span>
+                    </span>
+                  )}
+                </>
               )
             })()}
           </div>
@@ -167,7 +220,7 @@ export default function DonationDetail() {
                 Quantity
               </span>
               <p className="text-sm font-bold text-gray-900">
-                {donation.quantity} {donation.unit}
+                {formatQuantityUnit(donation.quantity, donation.unit)}
               </p>
             </div>
 
@@ -193,16 +246,14 @@ export default function DonationDetail() {
 
             <div className="space-y-1">
               <span className="text-[11px] font-semibold uppercase text-gray-400">
-                Best Before / Expiry
+                {donation.status === 'completed' ? 'Completed Exchange' : 'Best Before / Expiry'}
               </span>
               <p className="text-sm font-bold text-gray-900 flex items-center gap-1.5">
                 <Calendar className="w-3.5 h-3.5 text-gray-400" />
                 <span>
-                  {new Date(donation.bestBefore).toLocaleDateString('en-US', {
-                    month: 'short',
-                    day: 'numeric',
-                    year: 'numeric',
-                  })}
+                  {donation.status === 'completed'
+                    ? 'Completed'
+                    : formatDateIST(donation.bestBefore || donation.expiresAt)}
                 </span>
               </p>
             </div>
@@ -258,7 +309,7 @@ export default function DonationDetail() {
                                 {receiverName}
                               </span>
                               <span className="text-[10px] bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full font-medium">
-                                {req.receiverExchangesCount || 4} exchanges
+                                {req.receiverExchangesCount ?? 0} {req.receiverExchangesCount === 1 ? 'completed exchange' : 'completed exchanges'}
                               </span>
                             </div>
                             <span className="text-[11px] text-gray-400">
@@ -273,14 +324,16 @@ export default function DonationDetail() {
                         {req.status === 'pending' ? (
                           <div className="flex items-center gap-2">
                             <button
-                              onClick={() => setActionModal({ request: req, action: 'accept' })}
-                              className="px-3 py-1.5 rounded-lg bg-[#2E7D32] hover:bg-[#256428] text-white text-xs font-semibold shadow-2xs"
+                              onClick={() => handleAcceptRequest(req)}
+                              disabled={submitting}
+                              className="px-3 py-1.5 rounded-lg bg-[#2E7D32] hover:bg-[#256428] text-white text-xs font-semibold shadow-2xs disabled:opacity-50"
                             >
-                              Accept Request
+                              {submitting ? 'Accepting...' : 'Accept Request'}
                             </button>
                             <button
-                              onClick={() => setActionModal({ request: req, action: 'decline' })}
-                              className="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-100 text-gray-600 text-xs font-semibold"
+                              onClick={() => setDeclineModalRequest(req)}
+                              disabled={submitting}
+                              className="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-100 text-gray-600 text-xs font-semibold disabled:opacity-50"
                             >
                               Decline
                             </button>
@@ -298,9 +351,28 @@ export default function DonationDetail() {
                         )}
                       </div>
 
-                      <p className="text-xs text-gray-600 bg-white p-3 rounded-lg border border-gray-100 italic">
-                        "{req.message}"
-                      </p>
+                      {/* Delivery Preference Badge & Message */}
+                      <div className="bg-white p-3 rounded-lg border border-gray-100 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                            Delivery Preference
+                          </span>
+                          {(req.deliveryPreference === 'direct_pickup' || req.deliveryMethod === 'direct_pickup') ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-[#2E7D32] border border-emerald-200">
+                              <HeartHandshake className="w-3 h-3" />
+                              <span>Direct Receiver Pickup</span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-blue-50 text-[#1565C0] border border-blue-200">
+                              <Truck className="w-3 h-3" />
+                              <span>Volunteer Courier</span>
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-600 italic">
+                          "{req.message}"
+                        </p>
+                      </div>
                     </div>
                   )
                 })}
@@ -326,73 +398,23 @@ export default function DonationDetail() {
         </div>
       </div>
 
-      {/* Accept / Decline Modal */}
-      {actionModal && (
+      {/* Decline Confirmation Modal */}
+      {declineModalRequest && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl p-6 max-w-md w-full space-y-4 shadow-xl">
-            <h3 className="text-base font-bold text-gray-900">
-              {actionModal.action === 'accept' ? 'Accept Food Request' : 'Decline Request'}
-            </h3>
-
-            {actionModal.action === 'accept' ? (
-              <div className="space-y-4">
-                <p className="text-xs text-gray-600">
-                  Accept request from{' '}
-                  <strong>
-                    {actionModal.request.receiverName || actionModal.request.receiver?.fullName}
-                  </strong>
-                  . How will this food exchange be transported?
-                </p>
-
-                {/* Handover Method Selection */}
-                <div className="space-y-2">
-                  <label
-                    onClick={() => setDeliveryType('volunteer_delivery')}
-                    className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                      deliveryType === 'volunteer_delivery'
-                        ? 'border-[#2E7D32] bg-emerald-50/50 ring-1 ring-[#2E7D32]'
-                        : 'border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <Truck className="w-5 h-5 text-[#2E7D32] shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-xs font-bold text-gray-900">
-                        Dispatch Community Volunteer (Recommended)
-                      </p>
-                      <p className="text-[11px] text-gray-500">
-                        A verified volunteer courier will pick up from your doorstep and deliver to the receiver.
-                      </p>
-                    </div>
-                  </label>
-
-                  <label
-                    onClick={() => setDeliveryType('direct_pickup')}
-                    className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                      deliveryType === 'direct_pickup'
-                        ? 'border-[#2E7D32] bg-emerald-50/50 ring-1 ring-[#2E7D32]'
-                        : 'border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <HeartHandshake className="w-5 h-5 text-gray-600 shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-xs font-bold text-gray-900">Direct Receiver Pickup</p>
-                      <p className="text-[11px] text-gray-500">
-                        The receiver will personally arrive at your pickup address.
-                      </p>
-                    </div>
-                  </label>
-                </div>
-              </div>
-            ) : (
-              <p className="text-xs text-gray-500">
-                Are you sure you want to decline this request? The receiver will be notified.
-              </p>
-            )}
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full space-y-4 shadow-xl">
+            <h3 className="text-base font-bold text-gray-900">Decline Request</h3>
+            <p className="text-xs text-gray-500">
+              Are you sure you want to decline the request from{' '}
+              <strong>
+                {declineModalRequest.receiverName || declineModalRequest.receiver?.fullName}
+              </strong>
+              ? The receiver will be notified.
+            </p>
 
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
                 type="button"
-                onClick={() => setActionModal(null)}
+                onClick={() => setDeclineModalRequest(null)}
                 className="px-4 py-2 rounded-xl border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50"
               >
                 Cancel
@@ -400,18 +422,10 @@ export default function DonationDetail() {
               <button
                 type="button"
                 disabled={submitting}
-                onClick={handleAction}
-                className={`px-4 py-2 rounded-xl text-white text-xs font-semibold shadow-xs ${
-                  actionModal.action === 'accept'
-                    ? 'bg-[#2E7D32] hover:bg-[#256428]'
-                    : 'bg-red-600 hover:bg-red-700'
-                }`}
+                onClick={handleDeclineRequest}
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-semibold shadow-xs disabled:opacity-50"
               >
-                {submitting
-                  ? 'Processing...'
-                  : actionModal.action === 'accept'
-                  ? 'Confirm & Schedule Exchange'
-                  : 'Confirm Decline'}
+                {submitting ? 'Declining...' : 'Confirm Decline'}
               </button>
             </div>
           </div>

@@ -12,6 +12,7 @@ import {
   AlertCircle,
 } from 'lucide-react'
 import donorService from '../../services/donorService'
+import { formatUnit } from '../../utils/unitHelper'
 
 export default function Requests() {
   const navigate = useNavigate()
@@ -19,9 +20,10 @@ export default function Requests() {
   const [requests, setRequests] = useState([])
   const [counts, setCounts] = useState({ all: 0, new: 0, accepted: 0, declined: 0 })
   const [loading, setLoading] = useState(true)
-  const [actionModal, setActionModal] = useState(null)
-  const [deliveryType, setDeliveryType] = useState('volunteer_delivery')
-  const [submitting, setSubmitting] = useState(false)
+  const [declineModalRequest, setDeclineModalRequest] = useState(null)
+  const [submittingActionId, setSubmittingActionId] = useState(null)
+  const [toastMessage, setToastMessage] = useState('')
+  const [errorMessage, setErrorMessage] = useState('')
 
   const loadRequests = async (tab = activeTab) => {
     try {
@@ -42,24 +44,41 @@ export default function Requests() {
     loadRequests(activeTab)
   }, [activeTab])
 
-  const handleAction = async () => {
-    if (!actionModal) return
+  // Direct Accept without method-selection popup (reads method from request)
+  const handleAccept = async (req) => {
     try {
-      setSubmitting(true)
-      await donorService.respondToRequest(
-        actionModal.request._id,
-        actionModal.action,
-        deliveryType
-      )
-      setActionModal(null)
+      setSubmittingActionId(req._id)
+      setErrorMessage('')
+      await donorService.respondToRequest(req._id, 'accept')
+      setToastMessage('Request accepted! Scheduling exchange...')
       await loadRequests(activeTab)
-      if (actionModal.action === 'accept') {
+      setTimeout(() => {
         navigate('/donor/exchanges')
-      }
+      }, 600)
     } catch (err) {
-      alert(err.message || 'Action failed.')
+      setErrorMessage(err.message || 'Failed to accept request.')
+      setTimeout(() => setErrorMessage(''), 5000)
     } finally {
-      setSubmitting(false)
+      setSubmittingActionId(null)
+    }
+  }
+
+  // Handle Decline confirmation
+  const handleDecline = async () => {
+    if (!declineModalRequest) return
+    try {
+      setSubmittingActionId(declineModalRequest._id)
+      setErrorMessage('')
+      await donorService.respondToRequest(declineModalRequest._id, 'decline')
+      setDeclineModalRequest(null)
+      setToastMessage('Request has been declined.')
+      setTimeout(() => setToastMessage(''), 4000)
+      await loadRequests(activeTab)
+    } catch (err) {
+      setErrorMessage(err.message || 'Failed to decline request.')
+      setTimeout(() => setErrorMessage(''), 5000)
+    } finally {
+      setSubmittingActionId(null)
     }
   }
 
@@ -71,7 +90,23 @@ export default function Requests() {
   ]
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative">
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="fixed top-20 right-6 z-50 flex items-center gap-2 px-4 py-3 bg-[#2E7D32] text-white rounded-xl shadow-xl text-xs font-semibold animate-in slide-in-from-top-4">
+          <CheckCircle2 className="w-4 h-4 shrink-0" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
+      {/* Error Banner */}
+      {errorMessage && (
+        <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+          <span>{errorMessage}</span>
+        </div>
+      )}
+
       {/* Header (Page 7 in PDF) */}
       <div>
         <h1 className="text-2xl font-extrabold text-gray-900 tracking-tight">
@@ -144,7 +179,7 @@ export default function Requests() {
                       <div className="flex items-center gap-2">
                         <h3 className="text-sm font-bold text-gray-900">{receiverName}</h3>
                         <span className="text-[11px] text-gray-400 font-medium">
-                          • {req.receiverExchangesCount || 4} exchanges
+                          • {req.receiverExchangesCount ?? 0} {req.receiverExchangesCount === 1 ? 'completed exchange' : 'completed exchanges'}
                         </span>
                       </div>
                       <div className="flex items-center gap-2 mt-0.5">
@@ -153,7 +188,7 @@ export default function Requests() {
                           <strong className="text-gray-900">
                             {req.donation?.title}
                           </strong>{' '}
-                          ({req.requestedQuantity} {req.requestedUnit})
+                          ({req.requestedQuantity} {formatUnit(req.requestedUnit)})
                         </span>
                       </div>
                     </div>
@@ -183,11 +218,24 @@ export default function Requests() {
                   </div>
                 </div>
 
-                {/* Receiver Message Box (Page 7 in PDF) */}
-                <div className="bg-gray-50 rounded-xl p-4 border border-gray-100/80">
-                  <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
-                    Message
-                  </p>
+                {/* Receiver Message Box with Delivery Method Badge */}
+                <div className="bg-gray-50 rounded-xl p-4 border border-gray-100/80 space-y-2">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">
+                      Message & Delivery Method
+                    </p>
+                    {(req.deliveryPreference === 'direct_pickup' || req.deliveryMethod === 'direct_pickup') ? (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-[#2E7D32] border border-emerald-200">
+                        <HeartHandshake className="w-3.5 h-3.5" />
+                        <span>Direct Receiver Pickup</span>
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-[#1565C0] border border-blue-200">
+                        <Truck className="w-3.5 h-3.5" />
+                        <span>Volunteer Courier</span>
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs text-gray-700 leading-relaxed italic">
                     "{req.message}"
                   </p>
@@ -197,16 +245,25 @@ export default function Requests() {
                 {req.status === 'pending' && (
                   <div className="flex items-center justify-end gap-3 pt-2">
                     <button
-                      onClick={() => setActionModal({ request: req, action: 'decline' })}
-                      className="px-4 py-2 rounded-xl border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50 hover:text-red-600 transition-colors"
+                      onClick={() => setDeclineModalRequest(req)}
+                      disabled={submittingActionId === req._id}
+                      className="px-4 py-2 rounded-xl border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50 hover:text-red-600 transition-colors cursor-pointer"
                     >
                       Decline
                     </button>
                     <button
-                      onClick={() => setActionModal({ request: req, action: 'accept' })}
-                      className="px-5 py-2 rounded-xl bg-[#2E7D32] hover:bg-[#256428] text-white text-xs font-semibold shadow-xs transition-colors"
+                      onClick={() => handleAccept(req)}
+                      disabled={submittingActionId === req._id}
+                      className="px-5 py-2 rounded-xl bg-[#2E7D32] hover:bg-[#256428] text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer flex items-center gap-2"
                     >
-                      Accept Request
+                      {submittingActionId === req._id ? (
+                        <>
+                          <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          <span>Accepting...</span>
+                        </>
+                      ) : (
+                        <span>Accept Request</span>
+                      )}
                     </button>
                   </div>
                 )}
@@ -216,91 +273,36 @@ export default function Requests() {
         </div>
       )}
 
-      {/* Accept / Decline Modal */}
-      {actionModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl p-6 max-w-md w-full space-y-4 shadow-xl">
+      {/* Decline Confirmation Modal */}
+      {declineModalRequest && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full space-y-4 shadow-xl">
             <h3 className="text-base font-bold text-gray-900">
-              {actionModal.action === 'accept' ? 'Accept Food Request' : 'Decline Request'}
+              Decline Food Request
             </h3>
-
-            {actionModal.action === 'accept' ? (
-              <div className="space-y-4">
-                <p className="text-xs text-gray-600">
-                  You are accepting this request from{' '}
-                  <strong>
-                    {actionModal.request.receiverName || actionModal.request.receiver?.fullName}
-                  </strong>
-                  . Please choose the fulfillment method:
-                </p>
-
-                <div className="space-y-2">
-                  <label
-                    onClick={() => setDeliveryType('volunteer_delivery')}
-                    className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                      deliveryType === 'volunteer_delivery'
-                        ? 'border-[#2E7D32] bg-emerald-50/50 ring-1 ring-[#2E7D32]'
-                        : 'border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <Truck className="w-5 h-5 text-[#2E7D32] shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-xs font-bold text-gray-900">
-                        Assign Volunteer Courier (Recommended)
-                      </p>
-                      <p className="text-[11px] text-gray-500">
-                        A verified community volunteer will pick up the food from your address and transport it safely to the receiver.
-                      </p>
-                    </div>
-                  </label>
-
-                  <label
-                    onClick={() => setDeliveryType('direct_pickup')}
-                    className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                      deliveryType === 'direct_pickup'
-                        ? 'border-[#2E7D32] bg-emerald-50/50 ring-1 ring-[#2E7D32]'
-                        : 'border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <HeartHandshake className="w-5 h-5 text-gray-600 shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-xs font-bold text-gray-900">Direct Receiver Pickup</p>
-                      <p className="text-[11px] text-gray-500">
-                        The receiver will come directly to your doorstep for pickup.
-                      </p>
-                    </div>
-                  </label>
-                </div>
-              </div>
-            ) : (
-              <p className="text-xs text-gray-500">
-                Are you sure you want to decline this food request?
-              </p>
-            )}
+            <p className="text-xs text-gray-600 leading-relaxed">
+              Are you sure you want to decline this request from{' '}
+              <strong>
+                {declineModalRequest.receiverName || declineModalRequest.receiver?.fullName || 'the receiver'}
+              </strong>
+              ? They will be notified immediately.
+            </p>
 
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
                 type="button"
-                onClick={() => setActionModal(null)}
-                className="px-4 py-2 rounded-xl border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+                onClick={() => setDeclineModalRequest(null)}
+                className="px-4 py-2 rounded-xl border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50 cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
-                disabled={submitting}
-                onClick={handleAction}
-                className={`px-4 py-2 rounded-xl text-white text-xs font-semibold shadow-xs ${
-                  actionModal.action === 'accept'
-                    ? 'bg-[#2E7D32] hover:bg-[#256428]'
-                    : 'bg-red-600 hover:bg-red-700'
-                }`}
+                disabled={submittingActionId === declineModalRequest._id}
+                onClick={handleDecline}
+                className="px-4 py-2 rounded-xl text-white text-xs font-semibold shadow-xs bg-red-600 hover:bg-red-700 cursor-pointer"
               >
-                {submitting
-                  ? 'Processing...'
-                  : actionModal.action === 'accept'
-                  ? 'Confirm & Create Exchange'
-                  : 'Confirm Decline'}
+                {submittingActionId === declineModalRequest._id ? 'Declining...' : 'Confirm Decline'}
               </button>
             </div>
           </div>

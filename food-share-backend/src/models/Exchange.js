@@ -8,8 +8,11 @@ const timelineEntrySchema = new mongoose.Schema(
       enum: [
         'accepted',
         'ready_for_pickup',
+        'searching_for_volunteer',
         'volunteer_assigned',
+        'picked_up_by_volunteer',
         'picked_up',
+        'out_for_delivery',
         'in_transit',
         'completed',
         'cancelled',
@@ -85,14 +88,14 @@ const exchangeSchema = new mongoose.Schema(
       name: { type: String, default: '' },
       phone: { type: String, default: '' },
       avatar: { type: String, default: '' },
-      rating: { type: Number, default: 4.9 },
+      rating: { type: Number, default: 5.0 },
       transportType: {
         type: String,
-        enum: ['walking', 'bicycle', 'motorcycle', 'car', 'other'],
+        enum: ['walking', 'bicycle', 'motorcycle', 'car', 'electric_bike', 'Electric Bike', 'other'],
         default: 'car',
       },
       vehicleNumber: { type: String, default: '' },
-      deliveriesCompleted: { type: Number, default: 15 },
+      deliveriesCompleted: { type: Number, default: 0 },
     },
     volunteerStatus: {
       type: String,
@@ -104,16 +107,21 @@ const exchangeSchema = new mongoose.Schema(
         'picked_up',
         'in_transit',
         'delivered',
+        'not_needed',
+        'none',
       ],
-      default: 'assigned',
+      default: 'none',
     },
     status: {
       type: String,
       enum: [
         'accepted',
         'ready_for_pickup',
+        'searching_for_volunteer',
         'volunteer_assigned',
+        'picked_up_by_volunteer',
         'picked_up',
+        'out_for_delivery',
         'in_transit',
         'completed',
         'cancelled',
@@ -133,6 +141,20 @@ const exchangeSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+    pickupCoords: {
+      lat: { type: Number, default: null },
+      lng: { type: Number, default: null },
+    },
+    dropoffCoords: {
+      lat: { type: Number, default: null },
+      lng: { type: Number, default: null },
+    },
+    volunteerCoords: {
+      lat: { type: Number, default: null },
+      lng: { type: Number, default: null },
+      heading: { type: Number, default: null },
+      updatedAt: { type: Date, default: null },
+    },
     scheduledDate: {
       type: String,
       default: '',
@@ -141,9 +163,33 @@ const exchangeSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // Pickup Code (Donor -> Volunteer OR Donor -> Receiver)
     pickupCode: {
       type: String,
       default: () => Math.floor(1000 + Math.random() * 9000).toString(),
+    },
+    // Delivery Code (Volunteer -> Receiver; null for direct pickup)
+    deliveryCode: {
+      type: String,
+      default: null,
+    },
+    pickedUpAt: {
+      type: Date,
+      default: null,
+    },
+    pickedUpBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    deliveredAt: {
+      type: Date,
+      default: null,
+    },
+    deliveredBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
     },
     handoverConfirmed: {
       type: Boolean,
@@ -158,6 +204,48 @@ const exchangeSchema = new mongoose.Schema(
       rating: { type: Number, default: null },
       comment: { type: String, default: '' },
       submittedAt: { type: Date, default: null },
+      submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      role: { type: String, enum: ['donor', 'receiver', 'volunteer', ''], default: '' },
+    },
+    donorFeedback: {
+      rating: { type: Number, default: null },
+      comment: { type: String, default: '' },
+      submittedAt: { type: Date, default: null },
+    },
+    receiverFeedback: {
+      rating: { type: Number, default: null },
+      comment: { type: String, default: '' },
+      submittedAt: { type: Date, default: null },
+    },
+    receiverToDonorFeedback: {
+      rating: { type: Number, default: null },
+      comment: { type: String, default: '' },
+      submittedAt: { type: Date, default: null },
+    },
+    receiverToVolunteerFeedback: {
+      rating: { type: Number, default: null },
+      comment: { type: String, default: '' },
+      submittedAt: { type: Date, default: null },
+    },
+    // Extended fields for Receiver Order Tracking
+    orderNo: {
+      type: String,
+      default: () => `FD-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.floor(1000 + Math.random() * 9000)}`,
+      index: true,
+    },
+    stage: {
+      type: Number,
+      min: 1,
+      max: 5,
+      default: 1,
+    },
+    eta: {
+      type: String,
+      default: '~15 minutes',
+    },
+    courierPhone: {
+      type: String,
+      default: '',
     },
   },
   { timestamps: true }

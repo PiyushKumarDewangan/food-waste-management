@@ -67,6 +67,16 @@ export const authService = {
   async getMe() {
     return apiClient.get('/auth/me')
   },
+
+  async uploadAvatar(file) {
+    const formData = new FormData()
+    formData.append('avatar', file)
+    return apiClient.post('/auth/upload-avatar', formData, { isFormData: true })
+  },
+
+  async changePassword(payload) {
+    return apiClient.patch('/auth/change-password', payload)
+  },
 }
 
 export default authService

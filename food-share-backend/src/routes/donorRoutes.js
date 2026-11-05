@@ -17,6 +17,7 @@ import {
   updateExchangeStatus,
   submitExchangeFeedback,
   getMyImpactStats,
+  getDonorReviews,
 } from '../controllers/donorController.js'
 
 const router = Router()
@@ -29,6 +30,7 @@ router.get('/me', getMyDonorProfile)
 router.patch('/me', updateMyDonorProfile)
 router.get('/me/stats', getMyDonorStats)
 router.get('/me/impact', getMyImpactStats)
+router.get('/me/reviews', getDonorReviews)
 
 // Donations
 router.get('/me/donations', getMyDonations)

@@ -42,7 +42,15 @@ export default function LoginForm() {
     setLoading(true)
     try {
       const loggedInUser = await login(form.identifier, form.password, form.rememberMe)
-      navigate(loggedInUser?.role === 'admin' ? '/admin' : '/dashboard')
+      if (loggedInUser?.role === 'admin') {
+        navigate('/admin')
+      } else if (loggedInUser?.role === 'donor') {
+        navigate('/donor/dashboard')
+      } else if (loggedInUser?.role === 'receiver') {
+        navigate('/receiver/dashboard')
+      } else {
+        navigate('/dashboard')
+      }
     } catch (err) {
       setFormError(err.message || 'Unable to log in. Please try again.')
     } finally {

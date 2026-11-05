@@ -20,6 +20,23 @@ import Exchanges from '../pages/donor/Exchanges'
 import MyImpact from '../pages/donor/MyImpact'
 import DonorProfile from '../pages/donor/DonorProfile'
 
+// Receiver Dashboard Pages
+import ReceiverLayout from '../pages/receiver/ReceiverLayout'
+import ReceiverDashboard from '../pages/receiver/ReceiverDashboard'
+import BrowseFood from '../pages/receiver/BrowseFood'
+import MyRequests from '../pages/receiver/MyRequests'
+import ActivePickups from '../pages/receiver/ActivePickups'
+import HistoryImpact from '../pages/receiver/HistoryImpact'
+import ProfileNeeds from '../pages/receiver/ProfileNeeds'
+
+// Volunteer Portal Pages
+import VolunteerLayout from '../pages/volunteer/VolunteerLayout'
+import VolunteerDashboard from '../pages/volunteer/VolunteerDashboard'
+import VolunteerDeliveries from '../pages/volunteer/VolunteerDeliveries'
+import VolunteerHistory from '../pages/volunteer/VolunteerHistory'
+import VolunteerImpact from '../pages/volunteer/VolunteerImpact'
+import VolunteerProfile from '../pages/volunteer/VolunteerProfile'
+
 function AppRoutes() {
   return (
     <Routes>
@@ -71,6 +88,41 @@ function AppRoutes() {
         <Route path="exchanges" element={<Exchanges />} />
         <Route path="impact" element={<MyImpact />} />
         <Route path="profile" element={<DonorProfile />} />
+      </Route>
+
+      {/* Receiver Portal Routes */}
+      <Route
+        path="/receiver"
+        element={
+          <ProtectedRoute allowedRoles={['receiver']}>
+            <ReceiverLayout />
+          </ProtectedRoute>
+        }
+      >
+        <Route index element={<Navigate to="/receiver/dashboard" replace />} />
+        <Route path="dashboard" element={<ReceiverDashboard />} />
+        <Route path="browse" element={<BrowseFood />} />
+        <Route path="requests" element={<MyRequests />} />
+        <Route path="pickups" element={<ActivePickups />} />
+        <Route path="history" element={<HistoryImpact />} />
+        <Route path="profile" element={<ProfileNeeds />} />
+      </Route>
+
+      {/* Volunteer Portal Routes */}
+      <Route
+        path="/volunteer"
+        element={
+          <ProtectedRoute allowedRoles={['volunteer']}>
+            <VolunteerLayout />
+          </ProtectedRoute>
+        }
+      >
+        <Route index element={<Navigate to="/volunteer/dashboard" replace />} />
+        <Route path="dashboard" element={<VolunteerDashboard />} />
+        <Route path="deliveries" element={<VolunteerDeliveries />} />
+        <Route path="history" element={<VolunteerHistory />} />
+        <Route path="impact" element={<VolunteerImpact />} />
+        <Route path="profile" element={<VolunteerProfile />} />
       </Route>
 
       {/* Admin Dashboard */}

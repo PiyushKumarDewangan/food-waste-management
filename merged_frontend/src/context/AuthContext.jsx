@@ -92,6 +92,16 @@ export function AuthProvider({ children }) {
     }
   }, [clearSession])
 
+  const updateUser = useCallback((updatedFieldsOrUser) => {
+    setUser((prev) => {
+      if (!prev) return updatedFieldsOrUser
+      if (typeof updatedFieldsOrUser === 'function') {
+        return updatedFieldsOrUser(prev)
+      }
+      return { ...prev, ...updatedFieldsOrUser }
+    })
+  }, [])
+
   const value = {
     user,
     accessToken,
@@ -99,6 +109,7 @@ export function AuthProvider({ children }) {
     isLoading,
     login,
     logout,
+    updateUser,
     setSession, // exposed so register flows can log the user in immediately after signup (donor case)
   }
 

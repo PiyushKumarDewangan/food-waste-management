@@ -12,6 +12,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 import donorService from '../../services/donorService'
+import { FOOD_UNITS } from '../../utils/unitHelper'
 
 const CATEGORIES = [
   'Cooked Meal',
@@ -19,25 +20,44 @@ const CATEGORIES = [
   'Fresh Produce',
   'Dairy & Eggs',
   'Packaged & Canned',
-  'Beverages',
-  'Other',
+  'Beverages & Other',
 ]
-
-const UNITS = ['servings', 'loaves', 'kg', 'items', 'boxes', 'liters']
 
 export default function AddFood() {
   const navigate = useNavigate()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [savedAddress, setSavedAddress] = useState('')
+  const [coords, setCoords] = useState(null)
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && navigator?.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          setCoords({
+            lat: Number(pos.coords.latitude.toFixed(6)),
+            lng: Number(pos.coords.longitude.toFixed(6)),
+          })
+        },
+        () => {
+          // Geolocation denied or unavailable
+        },
+        { timeout: 8000 }
+      )
+    }
+  }, [])
 
   // Form State
   const [title, setTitle] = useState('')
   const [category, setCategory] = useState('')
   const [description, setDescription] = useState('')
   const [quantity, setQuantity] = useState(6)
-  const [unit, setUnit] = useState('servings')
-  const [bestBefore, setBestBefore] = useState('')
+  const [unit, setUnit] = useState('Servings')
+  // Default to 24h expiry (tomorrow's date in local time)
+  const [bestBefore, setBestBefore] = useState(() => {
+    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000)
+    return tomorrow.toISOString().split('T')[0]
+  })
   const [pickupAddress, setPickupAddress] = useState('')
   const [pickupStart, setPickupStart] = useState('14:00')
   const [pickupEnd, setPickupEnd] = useState('19:00')
@@ -156,6 +176,25 @@ export default function AddFood() {
 
     setLoading(true)
     try {
+      let finalCoords = coords
+      if (!finalCoords && typeof window !== 'undefined' && navigator?.geolocation) {
+        try {
+          finalCoords = await new Promise((resolve) => {
+            navigator.geolocation.getCurrentPosition(
+              (pos) =>
+                resolve({
+                  lat: Number(pos.coords.latitude.toFixed(6)),
+                  lng: Number(pos.coords.longitude.toFixed(6)),
+                }),
+              () => resolve(null),
+              { timeout: 3000 }
+            )
+          })
+        } catch {
+          finalCoords = null
+        }
+      }
+
       if (photoFile) {
         const formData = new FormData()
         formData.append('foodPhoto', photoFile)
@@ -168,9 +207,13 @@ export default function AddFood() {
         formData.append('pickupAddress', pickupAddress)
         formData.append('pickupWindow', pickupWindowStr)
         formData.append('pickupInstructions', pickupInstructions)
+        if (finalCoords) {
+          formData.append('lat', finalCoords.lat)
+          formData.append('lng', finalCoords.lng)
+        }
         await donorService.createDonation(formData, true)
       } else {
-        await donorService.createDonation({
+        const payload = {
           title,
           category,
           description,
@@ -180,7 +223,12 @@ export default function AddFood() {
           pickupAddress,
           pickupWindow: pickupWindowStr,
           pickupInstructions,
-        })
+        }
+        if (finalCoords) {
+          payload.lat = finalCoords.lat
+          payload.lng = finalCoords.lng
+        }
+        await donorService.createDonation(payload)
       }
 
       navigate('/donor/my-food')
@@ -345,9 +393,9 @@ export default function AddFood() {
               <select
                 value={unit}
                 onChange={(e) => setUnit(e.target.value)}
-                className="w-1/2 px-4 py-3 rounded-xl border border-gray-200 text-sm focus:border-[#2E7D32] outline-hidden bg-white text-gray-700"
+                className="w-1/2 px-4 py-3 rounded-xl border border-gray-200 text-sm focus:border-[#2E7D32] outline-hidden bg-white text-gray-700 cursor-pointer"
               >
-                {UNITS.map((u) => (
+                {FOOD_UNITS.map((u) => (
                   <option key={u} value={u}>
                     {u}
                   </option>

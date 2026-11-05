@@ -14,9 +14,31 @@ import {
   Menu,
   X,
   ChevronDown,
+  CheckCheck,
+  Loader2,
 } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
 import donorService from '../../services/donorService'
+import { navigationConfig } from '../../config/navigationConfig'
+import HelpSupportModal from '../../components/common/HelpSupportModal'
+import { getAvatarUrl } from '../../utils/imageHelper'
+
+function formatRelativeTime(dateString) {
+  if (!dateString) return ''
+  const date = new Date(dateString)
+  const now = new Date()
+  const diffInSeconds = Math.floor((now - date) / 1000)
+
+  if (diffInSeconds < 60) return 'Just now'
+  const diffInMinutes = Math.floor(diffInSeconds / 60)
+  if (diffInMinutes < 60) return `${diffInMinutes}m ago`
+  const diffInHours = Math.floor(diffInMinutes / 60)
+  if (diffInHours < 24) return `${diffInHours}h ago`
+  const diffInDays = Math.floor(diffInHours / 24)
+  if (diffInDays === 1) return 'Yesterday'
+  if (diffInDays < 7) return `${diffInDays}d ago`
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
 
 export default function DonorLayout() {
   const { user, logout } = useAuth()
@@ -26,12 +48,29 @@ export default function DonorLayout() {
   const [counts, setCounts] = useState({ requests: 0, exchanges: 0 })
   const [showNotifications, setShowNotifications] = useState(false)
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false)
+  const [helpModalOpen, setHelpModalOpen] = useState(false)
+
+  // Real Notification State
+  const [unreadNotifCount, setUnreadNotifCount] = useState(0)
+  const [notifications, setNotifications] = useState([])
+  const [expandedNotifId, setExpandedNotifId] = useState(null)
+  const [loadingNotifs, setLoadingNotifs] = useState(false)
+  const [notifsError, setNotifsError] = useState('')
 
   const notificationRef = useRef(null)
   const profileRef = useRef(null)
   const sidebarRef = useRef(null)
 
-  // Fetch pending request & active exchange counts for sidebar badges
+  // Fetch pending request & active exchange counts for sidebar badges, plus unread notification count
+  const loadUnreadCount = async () => {
+    try {
+      const res = await donorService.getUnreadNotificationCount()
+      setUnreadNotifCount(res.data?.unreadCount ?? 0)
+    } catch {
+      // Ignore background refresh errors
+    }
+  }
+
   useEffect(() => {
     let isMounted = true
     const loadBadges = async () => {
@@ -53,10 +92,69 @@ export default function DonorLayout() {
       }
     }
     loadBadges()
+    loadUnreadCount()
+
+    // Poll unread notification count periodically
+    const timer = setInterval(() => {
+      loadUnreadCount()
+    }, 60000)
+
     return () => {
       isMounted = false
+      clearInterval(timer)
     }
   }, [location.pathname])
+
+  const fetchNotifications = async () => {
+    try {
+      setLoadingNotifs(true)
+      setNotifsError('')
+      const res = await donorService.getNotifications()
+      setNotifications(res.data?.notifications || [])
+    } catch (err) {
+      setNotifsError('Failed to load notifications.')
+    } finally {
+      setLoadingNotifs(false)
+    }
+  }
+
+  const handleToggleNotifications = () => {
+    const nextState = !showNotifications
+    setShowNotifications(nextState)
+    if (nextState) {
+      fetchNotifications()
+      loadUnreadCount()
+    }
+  }
+
+  const handleMarkAsRead = async (notif) => {
+    // Toggle expand/collapse to read full message in place without opening any page
+    setExpandedNotifId((prev) => (prev === notif._id ? null : notif._id))
+
+    if (!notif.isRead) {
+      try {
+        await donorService.markNotificationAsRead(notif._id)
+        setNotifications((prev) =>
+          prev.map((n) => (n._id === notif._id ? { ...n, isRead: true } : n))
+        )
+        setUnreadNotifCount((prev) => Math.max(0, prev - 1))
+      } catch (err) {
+        console.error('Failed to mark notification as read:', err)
+      }
+    }
+  }
+
+  const handleMarkAllAsRead = async (e) => {
+    e.stopPropagation()
+    if (unreadNotifCount === 0) return
+    try {
+      await donorService.markAllNotificationsAsRead()
+      setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })))
+      setUnreadNotifCount(0)
+    } catch (err) {
+      console.error('Failed to mark all notifications as read:', err)
+    }
+  }
 
   // Close dropdowns on outside click or Escape
   useEffect(() => {
@@ -120,27 +218,12 @@ export default function DonorLayout() {
     .substring(0, 2)
     .toUpperCase() || 'PK'
 
-  const navItems = [
-    { label: 'Dashboard', path: '/donor/dashboard', icon: LayoutDashboard },
-    { label: 'Add Food', path: '/donor/add-food', icon: PlusCircle },
-    { label: 'My Food', path: '/donor/my-food', icon: UtensilsCrossed },
-    {
-      label: 'Requests',
-      path: '/donor/requests',
-      icon: Inbox,
-      badge: counts.requests > 0 ? counts.requests : null,
-      badgeColor: 'bg-amber-500 text-white',
-    },
-    {
-      label: 'Exchanges',
-      path: '/donor/exchanges',
-      icon: ArrowLeftRight,
-      badge: counts.exchanges > 0 ? counts.exchanges : null,
-      badgeColor: 'bg-emerald-600 text-white',
-    },
-    { label: 'My Impact', path: '/donor/impact', icon: Leaf },
-    { label: 'Profile', path: '/donor/profile', icon: User },
-  ]
+  const navItems = navigationConfig
+    .filter((item) => item.roles.includes('donor'))
+    .map((item) => ({
+      ...item,
+      badge: item.badgeKey ? (counts[item.badgeKey] > 0 ? counts[item.badgeKey] : null) : null,
+    }))
 
   return (
     <div className="min-h-screen bg-[#F8FAF7] flex">
@@ -242,9 +325,13 @@ export default function DonorLayout() {
           <div className="flex items-center justify-between px-3.5 py-2 text-xs text-gray-400">
             <span>FoodShare v1.0</span>
             <button
-              onClick={() => alert('FoodShare Community Support: help@foodshare.org')}
-              className="hover:text-emerald-700 cursor-pointer"
+              onClick={() => {
+                setSidebarOpen(false)
+                setHelpModalOpen(true)
+              }}
+              className="hover:text-emerald-700 cursor-pointer p-1 rounded-lg hover:bg-gray-100 transition-colors"
               title="Help & Support"
+              aria-label="Help & Support"
             >
               <HelpCircle className="w-4 h-4" />
             </button>
@@ -279,54 +366,107 @@ export default function DonorLayout() {
             {/* Notification Bell */}
             <div className="relative" ref={notificationRef}>
               <button
-                onClick={() => setShowNotifications(!showNotifications)}
+                onClick={handleToggleNotifications}
                 className="relative p-2.5 rounded-xl bg-white border border-gray-200 text-gray-600 hover:text-gray-900 hover:border-gray-300 shadow-2xs transition-all cursor-pointer"
                 title="Notifications"
                 aria-label="Notifications"
               >
                 <Bell className="w-4 h-4" />
-                {counts.requests > 0 && (
-                  <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-amber-500 ring-2 ring-white" />
+                {unreadNotifCount > 0 && (
+                  <span className="absolute -top-1 -right-1 px-1.5 py-0.5 min-w-[18px] text-[10px] font-extrabold text-white bg-red-500 rounded-full flex items-center justify-center ring-2 ring-white">
+                    {unreadNotifCount > 99 ? '99+' : unreadNotifCount}
+                  </span>
                 )}
               </button>
 
               {/* Notification Popover */}
               {showNotifications && (
-                <div className="absolute right-0 mt-2 w-80 bg-white rounded-2xl shadow-xl border border-gray-100 p-4 z-50">
+                <div className="absolute right-0 mt-2 w-80 sm:w-96 bg-white rounded-2xl shadow-xl border border-gray-100 p-4 z-50">
                   <div className="flex items-center justify-between pb-3 border-b border-gray-100">
-                    <p className="font-semibold text-sm text-gray-900">Notifications</p>
-                    {counts.requests > 0 && (
-                      <span className="text-[11px] bg-emerald-100 text-emerald-800 font-semibold px-2 py-0.5 rounded-full">
-                        {counts.requests} new
-                      </span>
-                    )}
+                    <div className="flex items-center gap-2">
+                      <p className="font-bold text-sm text-gray-900">Notifications</p>
+                      {unreadNotifCount > 0 && (
+                        <span className="text-[11px] bg-emerald-100 text-[#2E7D32] font-bold px-2 py-0.5 rounded-full">
+                          {unreadNotifCount > 99 ? '99+' : unreadNotifCount} new
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      onClick={handleMarkAllAsRead}
+                      disabled={unreadNotifCount === 0}
+                      className="text-[11px] font-semibold text-[#2E7D32] hover:text-[#256428] disabled:text-gray-300 disabled:cursor-not-allowed flex items-center gap-1 cursor-pointer transition-colors"
+                      title="Mark all notifications as read"
+                    >
+                      <CheckCheck className="w-3.5 h-3.5" />
+                      Mark all as read
+                    </button>
                   </div>
-                  {counts.requests > 0 ? (
-                    <div className="divide-y divide-gray-100 max-h-64 overflow-y-auto">
-                      <div className="py-2.5">
-                        <p className="text-xs font-semibold text-gray-900">
-                          Pending Food Requests
-                        </p>
-                        <p className="text-[11px] text-gray-500 mt-0.5">
-                          You have {counts.requests} incoming food request(s) awaiting review.
-                        </p>
-                      </div>
+
+                  {loadingNotifs ? (
+                    <div className="py-8 flex flex-col items-center justify-center text-xs text-gray-400 gap-2">
+                      <Loader2 className="w-5 h-5 animate-spin text-[#2E7D32]" />
+                      <span>Loading notifications...</span>
+                    </div>
+                  ) : notifsError ? (
+                    <div className="py-6 text-center text-xs text-red-500 space-y-2">
+                      <p>{notifsError}</p>
+                      <button
+                        onClick={fetchNotifications}
+                        className="text-[#2E7D32] font-semibold hover:underline cursor-pointer"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  ) : notifications.length === 0 ? (
+                    <div className="py-8 text-center text-xs text-gray-500 space-y-1">
+                      <Bell className="w-6 h-6 text-gray-300 mx-auto mb-1.5" />
+                      <p className="font-semibold text-gray-700">No notifications yet</p>
+                      <p className="text-gray-400 text-[11px]">You're all caught up!</p>
                     </div>
                   ) : (
-                    <div className="py-6 text-center text-xs text-gray-400">
-                      No new notifications. You're all caught up!
+                    <div className="divide-y divide-gray-100 max-h-80 overflow-y-auto mt-1 -mx-1 px-1">
+                      {notifications.map((notif) => {
+                        const isExpanded = expandedNotifId === notif._id
+                        return (
+                          <div
+                            key={notif._id}
+                            onClick={() => handleMarkAsRead(notif)}
+                            className={`p-2.5 my-1 rounded-xl transition-colors cursor-pointer hover:bg-gray-100/70 flex gap-2.5 items-start ${
+                              !notif.isRead ? 'bg-emerald-50/50' : 'bg-transparent'
+                            }`}
+                          >
+                            <span
+                              className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${
+                                !notif.isRead ? 'bg-[#2E7D32]' : 'bg-transparent'
+                              }`}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between gap-1">
+                                <p
+                                  className={`text-xs truncate ${
+                                    !notif.isRead
+                                      ? 'font-bold text-gray-900'
+                                      : 'font-medium text-gray-700'
+                                  }`}
+                                >
+                                  {notif.title}
+                                </p>
+                                <span className="text-[10px] text-gray-400 shrink-0 font-medium">
+                                  {formatRelativeTime(notif.createdAt)}
+                                </span>
+                              </div>
+                              <p
+                                className={`text-[11px] text-gray-500 mt-0.5 leading-relaxed ${
+                                  isExpanded ? 'whitespace-normal' : 'line-clamp-2'
+                                }`}
+                              >
+                                {notif.message}
+                              </p>
+                            </div>
+                          </div>
+                        )
+                      })}
                     </div>
-                  )}
-                  {counts.requests > 0 && (
-                    <button
-                      onClick={() => {
-                        setShowNotifications(false)
-                        navigate('/donor/requests')
-                      }}
-                      className="w-full mt-3 py-1.5 bg-gray-50 hover:bg-gray-100 text-xs font-medium text-emerald-800 rounded-lg text-center cursor-pointer"
-                    >
-                      View All Requests
-                    </button>
                   )}
                 </div>
               )}
@@ -341,8 +481,16 @@ export default function DonorLayout() {
                 aria-label="User Profile Menu"
               >
                 {/* Circular Avatar */}
-                <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-[#2E7D32]/15 text-[#2E7D32] font-bold flex items-center justify-center text-xs sm:text-sm border border-[#2E7D32]/25 shrink-0 group-hover:bg-[#2E7D32]/20 transition-colors">
-                  {initials}
+                <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-[#2E7D32]/15 text-[#2E7D32] font-bold flex items-center justify-center text-xs sm:text-sm border border-[#2E7D32]/25 shrink-0 group-hover:bg-[#2E7D32]/20 transition-colors overflow-hidden">
+                  {user?.avatar ? (
+                    <img
+                      src={getAvatarUrl(user.avatar)}
+                      alt={displayName}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    initials
+                  )}
                 </div>
 
                 {/* Name & Role */}
@@ -377,16 +525,6 @@ export default function DonorLayout() {
                       <User className="w-4 h-4 text-gray-500" />
                       <span>My Profile</span>
                     </button>
-                    <button
-                      onClick={() => {
-                        setProfileDropdownOpen(false)
-                        navigate('/donor/impact')
-                      }}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold text-gray-700 hover:text-gray-900 hover:bg-gray-50 transition-colors cursor-pointer text-left"
-                    >
-                      <Leaf className="w-4 h-4 text-gray-500" />
-                      <span>My Impact</span>
-                    </button>
                   </div>
 
                   <div className="pt-1 border-t border-gray-100">
@@ -412,6 +550,13 @@ export default function DonorLayout() {
           <Outlet />
         </main>
       </div>
+
+      {/* Help & Support FAQ Modal */}
+      <HelpSupportModal
+        isOpen={helpModalOpen}
+        onClose={() => setHelpModalOpen(false)}
+        userRole="donor"
+      />
     </div>
   )
 }

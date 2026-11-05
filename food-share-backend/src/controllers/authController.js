@@ -296,7 +296,86 @@ export const logout = asyncHandler(async (req, res) => {
 export const getMe = asyncHandler(async (req, res) => {
   return res.status(200).json(new ApiResponse(200, { user: req.user.toSafeObject() }, 'Current user fetched.'))
 })
-// 200 OK means request succeeded.
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/upload-avatar (protected — requires `authenticate` + `uploadAvatar`)
+// ---------------------------------------------------------------------------
+export const uploadUserAvatar = asyncHandler(async (req, res) => {
+  if (!req.file) {
+    throw new ApiError(400, 'Please select an image file (JPG, JPEG, PNG, or WebP) to upload.')
+  }
+
+  const avatarUrl = `/uploads/avatars/${req.file.filename}`
+
+  const user = await User.findByIdAndUpdate(
+    req.user._id,
+    { avatar: avatarUrl },
+    { new: true }
+  )
+
+  if (!user) {
+    throw new ApiError(404, 'User not found.')
+  }
+
+  // Also sync avatar to role-specific profiles if applicable
+  if (user.role === 'volunteer') {
+    await VolunteerProfile.findOneAndUpdate(
+      { user: user._id },
+      { avatar: avatarUrl }
+    ).catch(() => {})
+  }
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        avatar: avatarUrl,
+        user: user.toSafeObject(),
+      },
+      'Profile photo updated successfully.'
+    )
+  )
+})
+
+// ---------------------------------------------------------------------------
+// PATCH /api/auth/change-password (protected — requires `authenticate`)
+// ---------------------------------------------------------------------------
+export const changePassword = asyncHandler(async (req, res) => {
+  const { newPassword, confirmPassword } = req.body
+
+  if (!newPassword) {
+    throw new ApiError(400, 'New password is required.')
+  }
+
+  if (confirmPassword && newPassword !== confirmPassword) {
+    throw new ApiError(400, 'New password and confirm password do not match.')
+  }
+
+  if (newPassword.length < 8) {
+    throw new ApiError(400, 'New password must be at least 8 characters long.')
+  }
+
+  // Explicitly query authenticated user's passwordHash
+  const user = await User.findById(req.user._id).select('+passwordHash')
+  if (!user) {
+    throw new ApiError(404, 'User account no longer exists.')
+  }
+
+  if (user.passwordHash) {
+    const isSamePassword = await comparePassword(newPassword, user.passwordHash)
+    if (isSamePassword) {
+      throw new ApiError(400, 'New password cannot be the same as your current password.')
+    }
+  }
+
+  user.passwordHash = await hashPassword(newPassword)
+  await user.save()
+
+  return res.status(200).json(
+    new ApiResponse(200, null, 'Password updated successfully.')
+  )
+})
+
 
 
 // ---------------------------------------------------------------------------

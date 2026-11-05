@@ -36,8 +36,21 @@ const volunteerProfileSchema = new mongoose.Schema(
     reviewedAt: { type: Date, default: null },
     rejectionReason: { type: String, default: null },
 
-    // Placeholder fields for the future volunteer dashboard.
+    // Operational & Duty Settings
+    isOnDuty: { type: Boolean, default: true },
+    emergencyContact: { type: String, trim: true, default: '' },
+    operatingNeighborhood: { type: String, trim: true, default: '' },
+    smartDispatch: { type: Boolean, default: true },
+
+    // Statistics and Impact
     totalDeliveriesCompleted: { type: Number, default: 0 },
+    totalMealsDelivered: { type: Number, default: 0 },
+    foodRescuedKg: { type: Number, default: 0 },
+    co2PreventedKg: { type: Number, default: 0 },
+    hoursVolunteered: { type: Number, default: 0 },
+    rating: { type: Number, default: 0 },
+    totalReviewsCount: { type: Number, default: 0 },
+    avatar: { type: String, default: '' },
   },
   { timestamps: true }
 )

@@ -31,6 +31,50 @@ const receiverProfileSchema = new mongoose.Schema(
 
     // Placeholder fields for the future receiver dashboard.
     totalDonationsReceived: { type: Number, default: 0 },
+
+    // Extended Receiver Dashboard Fields
+    taxId: { type: String, default: '84-2948102' },
+    isVerified: { type: Boolean, default: true },
+    verifiedDate: { type: String, default: 'Nov 1, 2023' },
+    phone: { type: String, default: '+1 (555) 280-4400' },
+    email: { type: String, default: 'contact@hopeharbor.org' },
+    website: { type: String, default: '' },
+    dropoffAddress: { type: String, default: '87 Elm Street, Downtown, CA 90210' },
+    about: { type: String, default: '' },
+    lat: { type: Number, default: null },
+    lng: { type: Number, default: null },
+
+    capacity: {
+      storageTypes: {
+        type: [String],
+        default: ['refrigerated', 'dry'],
+      },
+      maxServingsPerPickup: { type: Number, default: 100 },
+      peopleServedPerDay: { type: Number, default: 150 },
+      preferredPickupWindows: {
+        type: [String],
+        default: ['Morning (09:00 - 12:00)', 'Afternoon (12:00 - 16:00)'],
+      },
+      vehicleAvailable: { type: Boolean, default: true },
+    },
+
+    dietaryPrefs: {
+      type: [String],
+      default: ['Halal', 'Vegetarian', 'Vegan', 'Gluten-Free'],
+    },
+    preferredCategories: {
+      type: [String],
+      default: ['Cooked Meals', 'Fresh Produce', 'Bakery', 'Dairy & Eggs', 'Packaged Goods'],
+    },
+
+    notificationPrefs: {
+      newFoodAvailable: { type: Boolean, default: true },
+      requestStatusUpdates: { type: Boolean, default: true },
+      deliveryAlerts: { type: Boolean, default: true },
+      urgentExpiryAlerts: { type: Boolean, default: true },
+      weeklyImpactDigest: { type: Boolean, default: true },
+      smsNotifications: { type: Boolean, default: false },
+    },
   },
   { timestamps: true }
 )

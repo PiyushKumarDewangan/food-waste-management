@@ -22,6 +22,13 @@ const donorProfileSchema = new mongoose.Schema(
     // Placeholder fields for the future donor dashboard.
     totalDonationsPosted: { type: Number, default: 0 },
     totalMealsShared: { type: Number, default: 0 },
+
+    // In-app Notification Preferences
+    notificationPreferences: {
+      newFoodRequest: { type: Boolean, default: true },
+      volunteerCourierUpdates: { type: Boolean, default: true },
+      exchangeCompleted: { type: Boolean, default: true },
+    },
   },
   { timestamps: true }
 )

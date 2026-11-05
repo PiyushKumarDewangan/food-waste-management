@@ -4,6 +4,7 @@ export const donorService = {
   // Profile
   getProfile: () => apiClient.get('/donors/me'),
   updateProfile: (data) => apiClient.patch('/donors/me', data),
+  getReviews: () => apiClient.get('/donors/me/reviews'),
 
   // Stats & Impact
   getStats: () => apiClient.get('/donors/me/stats'),
@@ -31,6 +32,14 @@ export const donorService = {
     apiClient.patch(`/donors/me/exchanges/${id}/status`, { status, note, verificationCode }),
   submitFeedback: (id, rating, comment) =>
     apiClient.post(`/donors/me/exchanges/${id}/feedback`, { rating, comment }),
+
+  // Notifications
+  getNotifications: () => apiClient.get('/notifications'),
+  getUnreadNotificationCount: () => apiClient.get('/notifications/unread-count'),
+  markNotificationAsRead: (id) => apiClient.patch(`/notifications/${id}/read`),
+  markAllNotificationsAsRead: () => apiClient.patch('/notifications/read-all'),
+  getNotificationPreferences: () => apiClient.get('/notifications/preferences'),
+  updateNotificationPreferences: (preferences) => apiClient.put('/notifications/preferences', preferences),
 }
 
 export default donorService
