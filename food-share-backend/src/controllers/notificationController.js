@@ -4,6 +4,7 @@ import { ApiError } from '../utils/ApiError.js'
 import { Notification } from '../models/Notification.js'
 import { DonorProfile } from '../models/DonorProfile.js'
 import { ReceiverProfile } from '../models/ReceiverProfile.js'
+import { VolunteerProfile } from '../models/VolunteerProfile.js'
 
 // GET /api/notifications — list notifications for current authenticated user
 export const getMyNotifications = asyncHandler(async (req, res) => {
@@ -107,6 +108,19 @@ export const getNotificationPreferences = asyncHandler(async (req, res) => {
     )
   }
 
+  if (req.user.role === 'volunteer') {
+    const profile = await VolunteerProfile.findOne({ user: req.user._id })
+    const prefs = profile?.notificationPreferences || {
+      nearbyPickups: true,
+      urgentExpiryAlerts: true,
+      exchangeStatusUpdates: true,
+      weeklyImpactDigest: true,
+    }
+    return res.status(200).json(
+      new ApiResponse(200, prefs, 'Notification preferences fetched.')
+    )
+  }
+
   return res.status(200).json(
     new ApiResponse(
       200,
@@ -154,6 +168,32 @@ export const updateNotificationPreferences = asyncHandler(async (req, res) => {
     return res.status(200).json(
       new ApiResponse(200, profile.notificationPreferences, 'Notification preferences updated successfully.')
     )
+  }
+
+  if (req.user.role === 'volunteer') {
+    let profile = await VolunteerProfile.findOne({ user: req.user._id })
+    if (profile) {
+      if (!profile.notificationPreferences) {
+        profile.notificationPreferences = {
+          nearbyPickups: true,
+          urgentExpiryAlerts: true,
+          exchangeStatusUpdates: true,
+          weeklyImpactDigest: true,
+        }
+      }
+
+      Object.keys(req.body).forEach((key) => {
+        if (typeof req.body[key] === 'boolean') {
+          profile.notificationPreferences[key] = req.body[key]
+        }
+      })
+
+      await profile.save()
+
+      return res.status(200).json(
+        new ApiResponse(200, profile.notificationPreferences, 'Volunteer notification preferences updated successfully.')
+      )
+    }
   }
 
   return res.status(200).json(

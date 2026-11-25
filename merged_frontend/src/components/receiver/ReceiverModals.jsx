@@ -16,6 +16,8 @@ import {
   Check,
 } from 'lucide-react'
 import { getFoodImageUrl, handleImageError } from '../../utils/imageHelper'
+import { getCombinedFoodTitle, getOrderItems } from '../../utils/unitHelper'
+import CombinedItemsBreakdown from '../common/CombinedItemsBreakdown'
 
 // 1. Floating Round Help Button + Help Modal
 export function HelpModal({ isOpen, onClose }) {
@@ -328,7 +330,7 @@ export function RateModal({ order, isOpen, onClose, onSubmit, isSubmitting }) {
 
         <h3 className="text-base font-bold text-gray-900 mb-0.5">Rate & Feedback</h3>
         <p className="text-xs text-gray-500 mb-4">
-          Order #{order.orderNo} · {order.title}
+          Order #{order.orderNo} · {getCombinedFoodTitle(order)}
         </p>
 
         {!selectedTarget ? (
@@ -565,7 +567,7 @@ export function ReportIssueModal({ order, isOpen, onClose, onSubmit, isSubmittin
           <h3 className="text-base font-bold text-gray-900">Report an Issue</h3>
         </div>
         <p className="text-xs text-gray-500 mb-4">
-          Order #{order.orderNo} · {order.title}
+          Order #{order.orderNo} · {getCombinedFoodTitle(order)}
         </p>
 
         {error && (
@@ -641,7 +643,7 @@ export function ReportIssueModal({ order, isOpen, onClose, onSubmit, isSubmittin
 }
 
 // 5. Order Details Modal
-export function OrderDetailsModal({ order, isOpen, onClose }) {
+export function OrderDetailsModal({ order, isOpen, onClose, onCallCourier }) {
   if (!isOpen || !order) return null
 
   return (
@@ -674,7 +676,8 @@ export function OrderDetailsModal({ order, isOpen, onClose }) {
 
         <div className="space-y-3.5 text-xs text-gray-700">
           <div className="p-3 bg-gray-50 rounded-xl space-y-1">
-            <p className="text-xs font-bold text-gray-900">{order.donationTitle || order.title}</p>
+            <p className="text-xs font-bold text-gray-900">{getCombinedFoodTitle(order)}</p>
+            <CombinedItemsBreakdown items={getOrderItems(order)} />
             <p className="text-gray-500">{order.servings} servings · {order.donorName || order.donor}</p>
           </div>
 
@@ -703,13 +706,21 @@ export function OrderDetailsModal({ order, isOpen, onClose }) {
                 <p className="font-semibold text-gray-900">{order.courier.name}</p>
                 <p className="text-[11px] text-gray-500">{order.courier.transport} · ★ {order.courier.rating}</p>
               </div>
-              <a
-                href={`tel:${order.courier.phone}`}
-                className="px-3 py-1.5 rounded-lg bg-white border border-gray-200 text-xs font-semibold text-gray-700 hover:text-emerald-800 flex items-center gap-1.5 shadow-2xs"
+              <button
+                type="button"
+                onClick={() => {
+                  if (onCallCourier) {
+                    onCallCourier(order.courier)
+                  } else {
+                    window.open(`tel:${order.courier.phone || '+91 98200 44321'}`)
+                  }
+                }}
+                className="px-3 py-1.5 rounded-lg bg-white border border-gray-200 text-xs font-semibold text-gray-700 hover:text-emerald-800 flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                title="Call or copy courier phone number"
               >
                 <Phone className="w-3.5 h-3.5 text-[#2E7D32]" />
-                Call
-              </a>
+                <span>Call Courier</span>
+              </button>
             </div>
           )}
         </div>

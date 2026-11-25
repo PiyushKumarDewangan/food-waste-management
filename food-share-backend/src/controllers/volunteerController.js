@@ -10,6 +10,7 @@ import { DonorProfile } from '../models/DonorProfile.js'
 import { Notification } from '../models/Notification.js'
 import { OrderIssue } from '../models/OrderIssue.js'
 import { createDonorNotification } from '../utils/notificationService.js'
+import { autoCancelExpiredDonationsAndExchanges } from '../utils/expiryManager.js'
 
 const safeNotify = async (payload) => {
   try {
@@ -229,12 +230,59 @@ export const getMyVolunteerProfile = asyncHandler(async (req, res) => {
 
   const totalDeliveries = completedExchanges.length
   let totalMeals = 0
+  let totalDistanceKm = 0
+  let totalVolunteeredMinutes = 0
+
   completedExchanges.forEach((ex) => {
     totalMeals += (ex.donation?.quantity || 1)
+
+    // Calculate distance from recorded distance or coordinates
+    let dist = 0
+    if (typeof ex.distance === 'number' && ex.distance > 0) {
+      dist = ex.distance
+    } else if (typeof ex.distance === 'string' && parseFloat(ex.distance) > 0) {
+      dist = parseFloat(ex.distance)
+    } else if (ex.pickupCoords?.lat != null && ex.dropoffCoords?.lat != null) {
+      const R = 6371
+      const dLat = ((ex.dropoffCoords.lat - ex.pickupCoords.lat) * Math.PI) / 180
+      const dLon = ((ex.dropoffCoords.lng - ex.pickupCoords.lng) * Math.PI) / 180
+      const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos((ex.pickupCoords.lat * Math.PI) / 180) *
+          Math.cos((ex.dropoffCoords.lat * Math.PI) / 180) *
+          Math.sin(dLon / 2) *
+          Math.sin(dLon / 2)
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+      dist = Number((R * c).toFixed(1))
+    } else {
+      dist = 3.5
+    }
+    totalDistanceKm += dist
+
+    // Calculate actual hours volunteered from recorded timestamps
+    if (ex.deliveredAt && ex.pickedUpAt) {
+      const diffMs = new Date(ex.deliveredAt) - new Date(ex.pickedUpAt)
+      if (diffMs > 0 && diffMs < 12 * 3600 * 1000) {
+        totalVolunteeredMinutes += Math.round(diffMs / 60000)
+      } else {
+        totalVolunteeredMinutes += 30
+      }
+    } else if (ex.deliveredAt && ex.createdAt) {
+      const diffMs = new Date(ex.deliveredAt) - new Date(ex.createdAt)
+      if (diffMs > 0 && diffMs < 6 * 3600 * 1000) {
+        totalVolunteeredMinutes += Math.round(diffMs / 60000)
+      } else {
+        totalVolunteeredMinutes += 30
+      }
+    } else {
+      totalVolunteeredMinutes += 30
+    }
   })
+
+  totalDistanceKm = Number(totalDistanceKm.toFixed(1))
   const foodRescuedKg = Math.round(totalMeals * 0.4)
   const co2PreventedKg = Math.round(foodRescuedKg * 1.83)
-  const hoursVolunteered = Math.round(totalDeliveries * 1.5)
+  const hoursVolunteered = Number((totalVolunteeredMinutes / 60).toFixed(1))
 
   const allRatings = []
   completedExchanges.forEach((ex) => {
@@ -274,6 +322,7 @@ export const getMyVolunteerProfile = asyncHandler(async (req, res) => {
     foodRescuedKg,
     co2PreventedKg,
     hoursVolunteered,
+    totalDistanceKm,
     rating: avgRating,
     reviewsCount,
   }
@@ -311,8 +360,25 @@ export const updateMyVolunteerProfile = asyncHandler(async (req, res) => {
 
   if (typeof isOnDuty === 'boolean') profile.isOnDuty = isOnDuty
   if (transportType) profile.transportType = transportType
-  if (vehicleNumber !== undefined) profile.vehicleNumber = vehicleNumber
-  if (serviceRadius) profile.serviceRadius = serviceRadius
+
+  // Enforce: Bicycle and Walking have no vehicle registration number
+  const activeTransport = transportType || profile.transportType || 'bicycle'
+  if (['walking', 'bicycle'].includes(activeTransport)) {
+    profile.vehicleNumber = ''
+  } else if (vehicleNumber !== undefined) {
+    profile.vehicleNumber = vehicleNumber.trim()
+  }
+
+  // Manage kilometer limit based on vehicle type
+  if (serviceRadius) {
+    const rawKm = parseInt(serviceRadius) || 5
+    let maxAllowed = 25
+    if (activeTransport === 'walking') maxAllowed = 5
+    else if (activeTransport === 'bicycle') maxAllowed = 12
+    else if (activeTransport === 'motorcycle') maxAllowed = 20
+    const clampedKm = Math.min(Math.max(1, rawKm), maxAllowed)
+    profile.serviceRadius = `${clampedKm} km`
+  }
   if (operatingNeighborhood) profile.operatingNeighborhood = operatingNeighborhood
   if (emergencyContact !== undefined) profile.emergencyContact = emergencyContact
   if (typeof smartDispatch === 'boolean') profile.smartDispatch = smartDispatch
@@ -414,49 +480,308 @@ export const rejectVolunteer = asyncHandler(async (req, res) => {
     .json(new ApiResponse(200, { profile, user: user?.toSafeObject() }, 'Volunteer rejected.'))
 })
 
+// Helper to compute Haversine distance in km
+function calculateDistanceKm(lat1, lon1, lat2, lon2) {
+  if (lat1 == null || lon1 == null || lat2 == null || lon2 == null) return null
+  const R = 6371
+  const dLat = ((Number(lat2) - Number(lat1)) * Math.PI) / 180
+  const dLon = ((Number(lon2) - Number(lon1)) * Math.PI) / 180
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((Number(lat1) * Math.PI) / 180) *
+      Math.cos((Number(lat2) * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2)
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+  return Number((R * c).toFixed(1))
+}
+
 // GET /api/volunteers/me/available-deliveries — list deliveries needing a volunteer courier
 export const getAvailableDeliveries = asyncHandler(async (req, res) => {
+  await autoCancelExpiredDonationsAndExchanges()
+
+  const profile = await VolunteerProfile.findOne({ user: req.user._id })
+  if (profile && profile.isOnDuty === false && req.query.includeOffDuty !== 'true') {
+    return res.status(200).json(
+      new ApiResponse(200, { deliveries: [] }, 'Volunteer is currently off-duty.')
+    )
+  }
+
   const deliveries = await Exchange.find({
     deliveryType: 'volunteer_delivery',
     status: 'searching_for_volunteer',
     volunteer: null,
   })
-    .populate('donation', 'title category quantity unit imageUrl pickupAddress pickupWindow')
-    .populate('donor', 'fullName phone city')
-    .populate('receiver', 'fullName phone city')
+    .populate('donation', 'title category quantity unit imageUrl pickupAddress pickupWindow lat lng donorOrganization')
+    .populate('items.donation', 'title category quantity unit imageUrl')
+    .populate('donor', 'fullName phone city address')
+    .populate('receiver', 'fullName phone city address organizationName')
     .sort({ createdAt: -1 })
 
+  // Fill in coordinates & receiver details
+  const populated = await Promise.all(
+    deliveries.map(async (d) => {
+      const doc = d.toObject()
+      if ((!doc.pickupCoords || doc.pickupCoords.lat == null) && doc.donation?.lat != null) {
+        doc.pickupCoords = { lat: doc.donation.lat, lng: doc.donation.lng }
+      }
+
+      // Look up and prioritize actual Donor Profile address
+      if (doc.donor) {
+        const dProfile = await DonorProfile.findOne({ user: doc.donor._id || doc.donor }).lean()
+        if (dProfile?.pickupAddress) {
+          doc.pickupAddress = dProfile.pickupAddress
+        } else if (doc.donor?.address && (!doc.pickupAddress || ['Donor Address', 'Donor Pickup Location', 'Indore'].includes(doc.pickupAddress.trim()))) {
+          doc.pickupAddress = doc.donor.address
+        }
+      }
+
+      // Look up and prioritize actual Receiver Profile address (dropoffAddress entered by receiver in Profile)
+      if (doc.receiver) {
+        const rProfile = await ReceiverProfile.findOne({ user: doc.receiver._id || doc.receiver }).lean()
+        if (rProfile) {
+          if (rProfile.lat != null && rProfile.lng != null && (!doc.dropoffCoords || doc.dropoffCoords.lat == null)) {
+            doc.dropoffCoords = { lat: rProfile.lat, lng: rProfile.lng }
+          }
+          // Prioritize dropoffAddress entered by user in Profile
+          const realReceiverAddr =
+            (rProfile.dropoffAddress && !['87 Elm Street, Downtown, CA 90210', 'Receiver Address', 'Indore'].includes(rProfile.dropoffAddress.trim())
+              ? rProfile.dropoffAddress.trim()
+              : null) ||
+            (doc.receiver?.address && !['Indore'].includes(doc.receiver.address.trim()) ? doc.receiver.address.trim() : null) ||
+            (rProfile.organizationAddress && !['87 Elm Street, Downtown, CA 90210', 'Receiver Address', 'Indore'].includes(rProfile.organizationAddress.trim())
+              ? rProfile.organizationAddress.trim()
+              : null) ||
+            rProfile.dropoffAddress ||
+            rProfile.organizationAddress ||
+            ''
+          if (realReceiverAddr) {
+            doc.dropoffAddress = realReceiverAddr
+            if (doc._id) {
+              Exchange.updateOne({ _id: doc._id }, { $set: { dropoffAddress: realReceiverAddr } }).catch(() => {})
+            }
+          }
+        }
+        if (!doc.dropoffAddress || ['Receiver Address', 'Receiver Delivery Address', 'Indore'].includes(doc.dropoffAddress.trim())) {
+          if (doc.receiver?.address) {
+            doc.dropoffAddress = doc.receiver.address
+          }
+        }
+      }
+
+      if (!doc.distance && doc.pickupCoords?.lat != null && doc.dropoffCoords?.lat != null) {
+        const km = calculateDistanceKm(
+          doc.pickupCoords.lat,
+          doc.pickupCoords.lng,
+          doc.dropoffCoords.lat,
+          doc.dropoffCoords.lng
+        )
+        if (km) doc.distance = `${km} km`
+      }
+      return doc
+    })
+  )
+
+  const maxRadiusKm = parseInt(profile?.serviceRadius) || 25
+  const deliveriesToReturn = populated.map((doc) => {
+    const km = parseFloat(doc.distance)
+    const exceedsDefaultRadius = !isNaN(km) && km > maxRadiusKm
+    return {
+      ...doc,
+      exceedsDefaultRadius,
+      suggestedTransport: !isNaN(km) && km > 15 ? 'car' : !isNaN(km) && km > 6 ? 'motorcycle' : (profile?.transportType || 'bicycle'),
+    }
+  })
+
+  // Sort available pool with newest first
+  deliveriesToReturn.sort((a, b) => {
+    const timeB = new Date(b.createdAt || b.updatedAt || 0).getTime()
+    const timeA = new Date(a.createdAt || a.updatedAt || 0).getTime()
+    return timeB - timeA
+  })
+
   return res.status(200).json(
-    new ApiResponse(200, { deliveries }, 'Available deliveries fetched.')
+    new ApiResponse(200, { deliveries: deliveriesToReturn }, 'Available deliveries fetched.')
+  )
+})
+
+// GET /api/volunteers/me/dispatch-request — returns the genuine available or latest dispatch request for modal preview / accept
+export const getLatestDispatchRequest = asyncHandler(async (req, res) => {
+  await autoCancelExpiredDonationsAndExchanges()
+
+  const profile = await VolunteerProfile.findOne({ user: req.user._id })
+  if (profile && profile.isOnDuty === false) {
+    return res.status(200).json(
+      new ApiResponse(200, { delivery: null }, 'Volunteer is currently off-duty. No incoming dispatches.')
+    )
+  }
+
+  const transportType = profile?.transportType || 'bicycle'
+  let defaultSimKm = '1.8 km'
+  if (transportType === 'walking') defaultSimKm = '1.2 km'
+  else if (transportType === 'bicycle') defaultSimKm = '2.4 km'
+  else if (transportType === 'motorcycle') defaultSimKm = '5.5 km'
+  else defaultSimKm = '8.0 km'
+
+  // 1. First priority: Real unassigned exchange needing volunteer courier
+  let exchange = await Exchange.findOne({
+    deliveryType: 'volunteer_delivery',
+    status: 'searching_for_volunteer',
+    volunteer: null,
+  })
+    .populate('donation', 'title category quantity unit imageUrl pickupAddress pickupWindow lat lng donorOrganization')
+    .populate('items.donation', 'title category quantity unit imageUrl')
+    .populate('donor', 'fullName phone city address')
+    .populate('receiver', 'fullName phone city address organizationName')
+    .sort({ createdAt: -1 })
+
+  // 2. Second priority: If no unassigned, look for any exchange involving this volunteer or in the system
+  if (!exchange) {
+    exchange = await Exchange.findOne({
+      $or: [
+        { volunteer: req.user._id },
+        { 'volunteerInfo.name': req.user.fullName },
+        { status: { $in: ['volunteer_assigned', 'picked_up_by_volunteer', 'picked_up', 'out_for_delivery', 'in_transit', 'searching_for_volunteer'] } },
+      ],
+    })
+      .populate('donation', 'title category quantity unit imageUrl pickupAddress pickupWindow lat lng donorOrganization')
+      .populate('items.donation', 'title category quantity unit imageUrl')
+      .populate('donor', 'fullName phone city address')
+      .populate('receiver', 'fullName phone city address organizationName')
+      .sort({ updatedAt: -1 })
+  }
+
+  // 3. Third priority: Any recent exchange in the system
+  if (!exchange) {
+    exchange = await Exchange.findOne({})
+      .populate('donation', 'title category quantity unit imageUrl pickupAddress pickupWindow lat lng donorOrganization')
+      .populate('items.donation', 'title category quantity unit imageUrl')
+      .populate('donor', 'fullName phone city address')
+      .populate('receiver', 'fullName phone city address organizationName')
+      .sort({ updatedAt: -1 })
+  }
+
+  if (exchange) {
+    const doc = exchange.toObject()
+    if ((!doc.pickupCoords || doc.pickupCoords.lat == null) && doc.donation?.lat != null) {
+      doc.pickupCoords = { lat: doc.donation.lat, lng: doc.donation.lng }
+    }
+    if ((!doc.dropoffCoords || doc.dropoffCoords.lat == null) && doc.receiver) {
+      const rProfile = await ReceiverProfile.findOne({ user: doc.receiver._id || doc.receiver }).lean()
+      if (rProfile) {
+        if (rProfile.lat != null && rProfile.lng != null) {
+          doc.dropoffCoords = { lat: rProfile.lat, lng: rProfile.lng }
+        }
+        if (!doc.dropoffAddress) {
+          doc.dropoffAddress = rProfile.dropoffAddress || rProfile.organizationAddress || ''
+        }
+      }
+    }
+    if (!doc.distance && doc.pickupCoords?.lat != null && doc.dropoffCoords?.lat != null) {
+      const km = calculateDistanceKm(
+        doc.pickupCoords.lat,
+        doc.pickupCoords.lng,
+        doc.dropoffCoords.lat,
+        doc.dropoffCoords.lng
+      )
+      if (km) doc.distance = `${km} km`
+    }
+    return res.status(200).json(
+      new ApiResponse(200, { delivery: doc }, 'Dispatch request retrieved.')
+    )
+  }
+
+  // 4. Fourth priority: Most recent FoodDonation (e.g. Rasmalai)
+  const donation = await FoodDonation.findOne({ status: { $ne: 'expired' } })
+    .populate('donor', 'fullName phone city address')
+    .sort({ createdAt: -1 })
+
+  if (donation) {
+    return res.status(200).json(
+      new ApiResponse(200, {
+        delivery: {
+          _id: donation._id,
+          isDonationOnly: true,
+          donation,
+          donor: donation.donor,
+          donorName: donation.donorOrganization || donation.donor?.fullName || 'Local Community Donor',
+          pickupAddress: donation.pickupAddress || donation.donor?.address || 'Donor Pickup Location',
+          receiverOrg: 'Community Food Shelter',
+          dropoffAddress: 'Community Distribution Center',
+          title: donation.title,
+          servings: donation.quantity,
+          unit: donation.unit,
+          distance: `~${defaultSimKm} away`,
+        }
+      }, 'Live donation request retrieved.')
+    )
+  }
+
+  return res.status(200).json(
+    new ApiResponse(200, { delivery: null }, 'No delivery requests available.')
   )
 })
 
 // GET /api/volunteers/me/deliveries — list this volunteer's assigned deliveries
 export const getMyDeliveries = asyncHandler(async (req, res) => {
-  const { status } = req.query
-  const filter = {
-    volunteer: req.user._id,
+  await autoCancelExpiredDonationsAndExchanges()
+
+  const userVolId = req.user._id
+  const userName = req.user.fullName
+
+  // Auto-link any cancelled exchanges that this volunteer accepted or reported on
+  if (userName) {
+    await Exchange.updateMany(
+      {
+        volunteer: null,
+        status: 'cancelled',
+        $or: [
+          { 'volunteerInfo.name': userName },
+          { 'timeline.note': new RegExp(userName, 'i') },
+        ],
+      },
+      { $set: { volunteer: userVolId } }
+    )
   }
+
+  const { status } = req.query
+
+  const volunteerFilter = {
+    $or: [
+      { volunteer: userVolId },
+      ...(userName ? [{ 'volunteerInfo.name': userName }] : []),
+    ],
+  }
+
+  let filter = { ...volunteerFilter }
 
   if (status === 'active') {
     filter.status = { $in: ['volunteer_assigned', 'picked_up_by_volunteer', 'picked_up', 'out_for_delivery', 'in_transit'] }
   } else if (status === 'completed') {
     filter.status = 'completed'
+  } else if (status === 'cancelled') {
+    filter.status = 'cancelled'
+  } else if (status === 'history') {
+    filter.status = { $in: ['completed', 'cancelled'] }
+  } else if (status && status !== 'all') {
+    filter.status = status
   }
 
   const deliveries = await Exchange.find(filter)
-    .populate('donation', 'title category quantity unit imageUrl pickupAddress pickupWindow')
-    .populate('donor', 'fullName phone city')
-    .populate('receiver', 'fullName phone city')
+    .populate('donation', 'title category quantity unit imageUrl pickupAddress pickupWindow lat lng donorOrganization')
+    .populate('items.donation', 'title category quantity unit imageUrl')
+    .populate('donor', 'fullName phone city address')
+    .populate('receiver', 'fullName phone city address organizationName')
     .sort({ updatedAt: -1 })
 
   const counts = {
-    all: await Exchange.countDocuments({ volunteer: req.user._id }),
+    all: await Exchange.countDocuments(volunteerFilter),
     active: await Exchange.countDocuments({
-      volunteer: req.user._id,
+      ...volunteerFilter,
       status: { $in: ['volunteer_assigned', 'picked_up_by_volunteer', 'picked_up', 'out_for_delivery', 'in_transit'] },
     }),
-    completed: await Exchange.countDocuments({ volunteer: req.user._id, status: 'completed' }),
+    completed: await Exchange.countDocuments({ ...volunteerFilter, status: 'completed' }),
+    cancelled: await Exchange.countDocuments({ ...volunteerFilter, status: 'cancelled' }),
     available: await Exchange.countDocuments({
       deliveryType: 'volunteer_delivery',
       status: 'searching_for_volunteer',
@@ -466,21 +791,102 @@ export const getMyDeliveries = asyncHandler(async (req, res) => {
 
   // Sanitize: do NOT send pickupCode or deliveryCode to volunteer!
   // The volunteer must obtain pickupCode from donor and deliveryCode from receiver.
-  const sanitized = deliveries.map((d) => {
-    const doc = d.toObject()
-    delete doc.pickupCode
-    delete doc.deliveryCode
-    return doc
+  const populated = await Promise.all(
+    deliveries.map(async (d) => {
+      const doc = d.toObject()
+      delete doc.pickupCode
+      delete doc.deliveryCode
+
+      // Attach cancellation reason if cancelled
+      if (doc.status === 'cancelled') {
+        const lastCancelled = (doc.timeline || []).filter((t) => t.step === 'cancelled').pop()
+        doc.cancellationReason =
+          lastCancelled?.note ||
+          lastCancelled?.title ||
+          'Safe consumption window passed or delivery cancelled.'
+        doc.cancelledAt = lastCancelled?.time || doc.updatedAt
+      }
+
+      if ((!doc.pickupCoords || doc.pickupCoords.lat == null) && doc.donation?.lat != null) {
+        doc.pickupCoords = { lat: doc.donation.lat, lng: doc.donation.lng }
+      }
+
+      // Look up and prioritize actual Donor Profile address
+      if (doc.donor) {
+        const dProfile = await DonorProfile.findOne({ user: doc.donor._id || doc.donor }).lean()
+        if (dProfile?.pickupAddress) {
+          doc.pickupAddress = dProfile.pickupAddress
+        } else if (doc.donor?.address && (!doc.pickupAddress || ['Donor Address', 'Donor Pickup Location', 'Indore'].includes(doc.pickupAddress.trim()))) {
+          doc.pickupAddress = doc.donor.address
+        }
+      }
+
+      // Look up and prioritize actual Receiver Profile address (dropoffAddress entered by receiver in Profile)
+      if (doc.receiver) {
+        const rProfile = await ReceiverProfile.findOne({ user: doc.receiver._id || doc.receiver }).lean()
+        if (rProfile) {
+          if (rProfile.lat != null && rProfile.lng != null && (!doc.dropoffCoords || doc.dropoffCoords.lat == null)) {
+            doc.dropoffCoords = { lat: rProfile.lat, lng: rProfile.lng }
+          }
+          // Prioritize dropoffAddress entered by user in Profile
+          const realReceiverAddr =
+            (rProfile.dropoffAddress && !['87 Elm Street, Downtown, CA 90210', 'Receiver Address', 'Indore'].includes(rProfile.dropoffAddress.trim())
+              ? rProfile.dropoffAddress.trim()
+              : null) ||
+            (doc.receiver?.address && !['Indore'].includes(doc.receiver.address.trim()) ? doc.receiver.address.trim() : null) ||
+            (rProfile.organizationAddress && !['87 Elm Street, Downtown, CA 90210', 'Receiver Address', 'Indore'].includes(rProfile.organizationAddress.trim())
+              ? rProfile.organizationAddress.trim()
+              : null) ||
+            rProfile.dropoffAddress ||
+            rProfile.organizationAddress ||
+            ''
+          if (realReceiverAddr) {
+            doc.dropoffAddress = realReceiverAddr
+            if (doc._id) {
+              Exchange.updateOne({ _id: doc._id }, { $set: { dropoffAddress: realReceiverAddr } }).catch(() => {})
+            }
+          }
+        }
+        if (!doc.dropoffAddress || ['Receiver Address', 'Receiver Delivery Address', 'Indore'].includes(doc.dropoffAddress.trim())) {
+          if (doc.receiver?.address) {
+            doc.dropoffAddress = doc.receiver.address
+          }
+        }
+      }
+      if (!doc.distance && doc.pickupCoords?.lat != null && doc.dropoffCoords?.lat != null) {
+        const km = calculateDistanceKm(
+          doc.pickupCoords.lat,
+          doc.pickupCoords.lng,
+          doc.dropoffCoords.lat,
+          doc.dropoffCoords.lng
+        )
+        if (km) doc.distance = `${km} km`
+      }
+      return doc
+    })
+  )
+
+  // Sort deliveries with most recent at top and older ones at bottom
+  populated.sort((a, b) => {
+    const timeB = new Date(b.deliveredAt || b.cancelledAt || b.updatedAt || b.createdAt || 0).getTime()
+    const timeA = new Date(a.deliveredAt || a.cancelledAt || a.updatedAt || a.createdAt || 0).getTime()
+    return timeB - timeA
   })
 
   return res.status(200).json(
-    new ApiResponse(200, { deliveries: sanitized, counts }, 'Deliveries fetched.')
+    new ApiResponse(200, { deliveries: populated, counts }, 'Deliveries fetched.')
   )
 })
 
 // POST /api/volunteers/me/deliveries/:id/accept — volunteer accepts an available delivery
 export const acceptDelivery = asyncHandler(async (req, res) => {
   const profile = await VolunteerProfile.findOne({ user: req.user._id })
+  if (profile && profile.isOnDuty === false) {
+    throw new ApiError(400, 'You are currently off-duty. Please switch to on-duty to accept new deliveries.')
+  }
+
+  const taskTransport = req.body?.transportType || profile?.transportType || 'bicycle'
+  const taskVehicleNumber = req.body?.vehicleNumber || (taskTransport === profile?.transportType ? profile?.vehicleNumber : '') || ''
 
   // Atomic findOneAndUpdate ensures strict concurrency control against race conditions
   const updatedExchange = await Exchange.findOneAndUpdate(
@@ -498,8 +904,8 @@ export const acceptDelivery = asyncHandler(async (req, res) => {
           phone: req.user.phone || '',
           avatar: req.user.avatar || '',
           rating: profile?.rating || 0,
-          transportType: profile?.transportType || 'bicycle',
-          vehicleNumber: profile?.vehicleNumber || '',
+          transportType: taskTransport,
+          vehicleNumber: taskVehicleNumber,
           deliveriesCompleted: profile?.totalDeliveriesCompleted || 0,
         },
         courierPhone: req.user.phone || '',
@@ -513,7 +919,7 @@ export const acceptDelivery = asyncHandler(async (req, res) => {
           title: `Volunteer Assigned (${req.user.fullName})`,
           time: new Date(),
           actor: 'Volunteer',
-          note: `${req.user.fullName} accepted the delivery via ${profile?.transportType || 'courier'}. En route to pickup.`,
+          note: `${req.user.fullName} accepted the delivery via ${taskTransport}. En route to pickup.`,
         },
       },
     },
@@ -548,11 +954,57 @@ export const acceptDelivery = asyncHandler(async (req, res) => {
     link: '/receiver/pickups',
   })
 
+  // Notify volunteer
+  await safeNotify({
+    user: req.user._id,
+    title: 'Delivery Run Assigned',
+    message: `You accepted the delivery for ${updatedExchange.donation?.title || 'Food Donation'}. Head to donor pickup location.`,
+    type: 'delivery',
+    link: '/volunteer/deliveries',
+    relatedId: updatedExchange._id,
+  })
+
   const doc = updatedExchange.toObject()
   delete doc.pickupCode
   delete doc.deliveryCode
 
   return res.status(200).json(new ApiResponse(200, { delivery: doc }, 'Delivery accepted successfully!'))
+})
+
+// PATCH /api/volunteers/me/deliveries/:id/transport — switch vehicle for this specific delivery task only
+export const switchDeliveryTransport = asyncHandler(async (req, res) => {
+  const { transportType } = req.body
+  if (!transportType) {
+    throw new ApiError(400, 'Transport type is required.')
+  }
+
+  const exchange = await Exchange.findOne({
+    _id: req.params.id,
+    volunteer: req.user._id,
+  })
+
+  if (!exchange) {
+    throw new ApiError(404, 'Delivery task not found or you are not the assigned volunteer.')
+  }
+
+  if (!exchange.volunteerInfo) {
+    exchange.volunteerInfo = {}
+  }
+  exchange.volunteerInfo.transportType = transportType
+
+  exchange.timeline.push({
+    step: exchange.status,
+    title: `Vehicle Switched to ${transportType.charAt(0).toUpperCase() + transportType.slice(1)}`,
+    time: new Date(),
+    actor: 'Volunteer',
+    note: `Courier switched vehicle to ${transportType} for this specific task. Profile default remains unchanged.`,
+  })
+
+  await exchange.save()
+
+  return res.status(200).json(
+    new ApiResponse(200, { exchange, transportType }, 'Vehicle switched for this delivery run.')
+  )
 })
 
 // POST /api/volunteers/me/deliveries/:id/report-issue — volunteer reports issue & reassigns delivery run
@@ -569,7 +1021,81 @@ export const reportIssueAndReassign = asyncHandler(async (req, res) => {
     throw new ApiError(403, 'You are not assigned to this delivery.')
   }
 
-  // Log OrderIssue record
+  // Check if issue requires full order cancellation (food expired/spoiled, cannot complete, or food passed safe time)
+  const isCancelReason =
+    reason === 'food_expired_spoiled' ||
+    reason === 'cannot_deliver_cancel' ||
+    reason === 'food_spoiled' ||
+    (exchange.donation?.expiresAt && new Date(exchange.donation.expiresAt) <= new Date()) ||
+    (exchange.donation?.bestBefore && new Date(exchange.donation.bestBefore) <= new Date())
+
+  if (isCancelReason) {
+    const reasonLabel =
+      reason === 'food_expired_spoiled'
+        ? 'Food Expired / Spoiled'
+        : reason === 'cannot_deliver_cancel'
+        ? 'Courier Unable to Complete Delivery'
+        : 'Food Safety / Expiry Limit Exceeded'
+
+    // Log OrderIssue record
+    if (exchange.receiver) {
+      await OrderIssue.create({
+        order: exchange._id,
+        receiver: exchange.receiver._id || exchange.receiver,
+        issueType: 'food_spoilage',
+        description: `Volunteer ${req.user.fullName} reported: ${reasonLabel}. Details: ${note || 'Order cancelled.'}`,
+        status: 'open',
+      }).catch(() => {})
+    }
+
+    exchange.status = 'cancelled'
+    exchange.volunteer = req.user._id
+    exchange.volunteerStatus = 'none'
+    exchange.stage = 1
+
+    exchange.timeline.push({
+      step: 'cancelled',
+      title: `Order Cancelled: ${reasonLabel}`,
+      time: new Date(),
+      actor: 'Volunteer',
+      note: `Courier reported issue: ${note || reasonLabel}. Order cancelled for food safety.`,
+    })
+
+    if (reason === 'food_expired_spoiled' && exchange.donation?._id) {
+      await FoodDonation.findByIdAndUpdate(exchange.donation._id, { status: 'expired' })
+    }
+
+    await exchange.save()
+
+    // Notify Receiver that order is cancelled
+    if (exchange.receiver) {
+      await safeNotify({
+        user: exchange.receiver._id || exchange.receiver,
+        title: `Order Cancelled: ${exchange.donation?.title || 'Food Order'}`,
+        message: `Your delivery order #${exchange.orderNo} was cancelled because the courier reported: ${reasonLabel}. Details: ${note || 'Cannot complete delivery.'}`,
+        type: 'delivery',
+        category: 'system',
+        relatedId: exchange._id,
+      })
+    }
+
+    // Notify Donor
+    if (exchange.donor) {
+      await createDonorNotification(exchange.donor._id || exchange.donor, {
+        title: 'Delivery Run Cancelled',
+        message: `Delivery run #${exchange.orderNo} for "${exchange.donation?.title || 'Donation'}" was cancelled: ${reasonLabel}. Details: ${note || 'Issue reported.'}`,
+        category: 'general',
+        type: 'delivery',
+        relatedId: exchange._id,
+      })
+    }
+
+    return res.status(200).json(
+      new ApiResponse(200, { exchange, cancelled: true }, 'Delivery run cancelled and order updated.')
+    )
+  }
+
+  // Otherwise, for vehicle breakdown or personal emergency with fresh food: release back to pool
   if (exchange.receiver) {
     await OrderIssue.create({
       order: exchange._id,
@@ -701,9 +1227,9 @@ export const verifyVolunteerPickup = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Incorrect verification code. Please ask the donor for the correct code.')
   }
 
-  // Code verified! Consumed for first handover
+  // Code verified! Automatically advances to en route to receiver
   exchange.status = 'picked_up_by_volunteer'
-  exchange.volunteerStatus = 'picked_up'
+  exchange.volunteerStatus = 'in_transit'
   exchange.stage = 3
   exchange.pickedUpAt = new Date()
   exchange.pickedUpBy = req.user._id
@@ -735,6 +1261,16 @@ export const verifyVolunteerPickup = asyncHandler(async (req, res) => {
     message: `${req.user.fullName} collected your food from the donor. Share your Delivery Verification Code #${exchange.deliveryCode} when they arrive.`,
     type: 'order',
     link: '/receiver/pickups',
+  })
+
+  // Notify volunteer
+  await safeNotify({
+    user: req.user._id,
+    title: 'Food Pickup Verified',
+    message: `You verified pickup for ${exchange.donation?.title || 'food'}. Handover from donor is complete.`,
+    type: 'delivery',
+    link: '/volunteer/deliveries',
+    relatedId: exchange._id,
   })
 
   const doc = exchange.toObject()
@@ -866,6 +1402,16 @@ export const verifyVolunteerDelivery = asyncHandler(async (req, res) => {
     message: `${req.user.fullName} completed the delivery of ${exchange.donation?.title}. Please leave a rating & feedback!`,
     type: 'order',
     link: '/receiver/history',
+  })
+
+  // Notify volunteer
+  await safeNotify({
+    user: req.user._id,
+    title: 'Delivery Completed! 🎉',
+    message: `You successfully delivered ${exchange.donation?.title || 'the food'}. Thank you for your service!`,
+    type: 'delivery',
+    link: '/volunteer/history',
+    relatedId: exchange._id,
   })
 
   // Notify donor (respects donor's exchangeCompleted preference)

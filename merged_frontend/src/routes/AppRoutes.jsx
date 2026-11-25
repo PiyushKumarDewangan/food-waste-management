@@ -6,8 +6,16 @@ import Register from '../pages/auth/Register'
 import ForgotPassword from '../pages/auth/ForgotPassword'
 import ResetPassword from '../pages/auth/ResetPassword'
 import Dashboard from '../pages/dashboard/Dashboard'
-import AdminDashboard from '../pages/admin/AdminDashboard'
 import ProtectedRoute from '../components/layout/ProtectedRoute'
+
+// Admin Portal Pages
+import AdminLayout from '../pages/admin/AdminLayout'
+import AdminDashboard from '../pages/admin/AdminDashboard'
+import AdminVerifications from '../pages/admin/AdminVerifications'
+import AdminUsers from '../pages/admin/AdminUsers'
+import AdminFood from '../pages/admin/AdminFood'
+import AdminDeliveries from '../pages/admin/AdminDeliveries'
+import AdminReports from '../pages/admin/AdminReports'
 
 // Donor Dashboard Pages
 import DonorLayout from '../pages/donor/DonorLayout'
@@ -125,15 +133,23 @@ function AppRoutes() {
         <Route path="profile" element={<VolunteerProfile />} />
       </Route>
 
-      {/* Admin Dashboard */}
+      {/* Admin Portal Routes */}
       <Route
         path="/admin"
         element={
           <ProtectedRoute allowedRoles={['admin']}>
-            <AdminDashboard />
+            <AdminLayout />
           </ProtectedRoute>
         }
-      />
+      >
+        <Route index element={<Navigate to="/admin/dashboard" replace />} />
+        <Route path="dashboard" element={<AdminDashboard />} />
+        <Route path="verifications" element={<AdminVerifications />} />
+        <Route path="users" element={<AdminUsers />} />
+        <Route path="food" element={<AdminFood />} />
+        <Route path="deliveries" element={<AdminDeliveries />} />
+        <Route path="reports" element={<AdminReports />} />
+      </Route>
 
       {/* Catch-all route */}
       <Route path="*" element={<Navigate to="/" replace />} />

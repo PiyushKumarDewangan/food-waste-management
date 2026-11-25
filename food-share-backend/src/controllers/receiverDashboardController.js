@@ -11,6 +11,7 @@ import { Notification } from '../models/Notification.js'
 import { DonorProfile } from '../models/DonorProfile.js'
 import { syncVolunteerRating } from './volunteerController.js'
 import { createDonorNotification } from '../utils/notificationService.js'
+import { autoCancelExpiredDonationsAndExchanges } from '../utils/expiryManager.js'
 
 const safeCreateNotification = async (payload) => {
   try {
@@ -73,6 +74,9 @@ export function formatDistanceKm(distanceKm) {
 // 1. GET /api/receiver/dashboard
 export const getReceiverDashboard = asyncHandler(async (req, res) => {
   const userId = req.user._id
+
+  // Auto-cancel any expired donations or active runs where food expired
+  await autoCancelExpiredDonationsAndExchanges()
 
   // Ensure receiver profile exists
   let profile = await ReceiverProfile.findOne({ user: userId })
@@ -139,9 +143,76 @@ export const getReceiverDashboard = asyncHandler(async (req, res) => {
     status: { $in: inProgressStatuses },
   })
     .populate('donation')
+    .populate('items.donation')
     .populate('donor', 'fullName city')
     .populate('volunteer', 'fullName phone')
     .sort({ updatedAt: -1 })
+
+  // If no ongoing active delivery, check the receiver's most recent exchange:
+  // ONLY show cancelled state if the receiver's actual most recent exchange was cancelled!
+  // If the latest order was completed, do NOT show an old cancelled order from history.
+  let latestCancelledDelivery = null
+  let latestCompletedDelivery = null
+
+  if (!activeDelivery) {
+    const mostRecentExchange = await Exchange.findOne({ receiver: userId })
+      .populate('donation')
+      .populate('items.donation')
+      .populate('donor', 'fullName organizationName')
+      .sort({ updatedAt: -1 })
+
+    if (mostRecentExchange) {
+      if (mostRecentExchange.status === 'cancelled') {
+        const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000)
+        if (new Date(mostRecentExchange.updatedAt) >= twelveHoursAgo) {
+          const lastCancelledTimeline = (mostRecentExchange.timeline || [])
+            .filter((t) => t.step === 'cancelled')
+            .pop()
+
+          const isBasket = (mostRecentExchange.items && mostRecentExchange.items.length > 1) || mostRecentExchange.isBasket
+          const combinedTitle = isBasket
+            ? 'Combined Items'
+            : (mostRecentExchange.donation?.title || 'Food Donation')
+
+          latestCancelledDelivery = {
+            _id: mostRecentExchange._id,
+            orderNo: mostRecentExchange.orderNo || `FD-${mostRecentExchange._id.toString().slice(-8).toUpperCase()}`,
+            donationTitle: combinedTitle,
+            items: mostRecentExchange.items || [],
+            isBasket,
+            donorName: mostRecentExchange.donation?.donorOrganization || mostRecentExchange.donor?.fullName || 'Local Donor',
+            cancellationReason:
+              lastCancelledTimeline?.note ||
+              lastCancelledTimeline?.title ||
+              'Order was cancelled because the food reached its safe consumption limit or courier reported an issue.',
+            cancelledAt: lastCancelledTimeline?.time || mostRecentExchange.updatedAt,
+          }
+        }
+      } else if (mostRecentExchange.status === 'completed') {
+        const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000)
+        if (new Date(mostRecentExchange.updatedAt) >= sixHoursAgo) {
+          const isBasket = (mostRecentExchange.items && mostRecentExchange.items.length > 1) || mostRecentExchange.isBasket
+          const totalServings = isBasket
+            ? mostRecentExchange.items.reduce((s, it) => s + (Number(it.requestedQuantity) || 1), 0)
+            : (mostRecentExchange.donation?.quantity || mostRecentExchange.donation?.servings || 30)
+          const combinedTitle = isBasket
+            ? 'Combined Items'
+            : (mostRecentExchange.donation?.title || 'Food Donation')
+
+          latestCompletedDelivery = {
+            _id: mostRecentExchange._id,
+            orderNo: mostRecentExchange.orderNo || `FD-${mostRecentExchange._id.toString().slice(-8).toUpperCase()}`,
+            donationTitle: combinedTitle,
+            servings: totalServings,
+            items: mostRecentExchange.items || [],
+            isBasket,
+            donorName: mostRecentExchange.donation?.donorOrganization || mostRecentExchange.donor?.fullName || 'Local Donor',
+            completedAt: mostRecentExchange.updatedAt,
+          }
+        }
+      }
+    }
+  }
 
   // Expiring soon listings (items expiring within 6 hours)
   const now = new Date()
@@ -203,35 +274,52 @@ export const getReceiverDashboard = asyncHandler(async (req, res) => {
           volunteersDeployed: volunteerAssistance || 0,
         },
         activeDelivery: activeDelivery
-          ? {
-              _id: activeDelivery._id,
-              orderNo: activeDelivery.orderNo || `FD-${activeDelivery._id.toString().slice(-8).toUpperCase()}`,
-              donorName: activeDelivery.donation?.donorOrganization || activeDelivery.donor?.fullName || 'Spice Garden',
-              receiverOrg: profile.organizationName || req.user.fullName || 'Receiver Organization',
-              deliveryType: activeDelivery.deliveryType || 'volunteer_delivery',
-              isDirectPickup: activeDelivery.deliveryType === 'direct_pickup',
-              deliveryCode: receiverVisibleCode,
-              handoverCode: receiverVisibleCode,
-              status: activeDelivery.status,
-              volunteerStatus: activeDelivery.volunteerStatus,
-              stage: activeDelivery.stage || (activeDelivery.status === 'in_transit' ? 4 : 3),
-              courier: activeDelivery.volunteer
-                ? {
-                    name: activeDelivery.volunteerInfo?.name || activeDelivery.volunteer?.fullName || 'Assigned Courier',
-                    transport: activeDelivery.volunteerInfo?.transportType || 'Volunteer Courier',
-                    eta: activeDelivery.eta || '~15 minutes',
-                    rating: activeDelivery.volunteerInfo?.rating || 5.0,
-                    phone: activeDelivery.courierPhone || activeDelivery.volunteerInfo?.phone || '',
-                    avatar: activeDelivery.volunteerInfo?.avatar || '',
-                  }
-                : null,
-              donationTitle: activeDelivery.donation?.title || 'Food Donation',
-              servings: activeDelivery.donation?.quantity || activeDelivery.donation?.servings || 30,
-              dropoffAddress: activeDelivery.dropoffAddress || profile.dropoffAddress,
-              pickupAddress: activeDelivery.pickupAddress,
-              pickupWindow: activeDelivery.pickupWindow || 'Flexible',
-            }
+          ? (() => {
+              const isBasket = (activeDelivery.items && activeDelivery.items.length > 1) || activeDelivery.isBasket
+              const totalServings = isBasket
+                ? activeDelivery.items.reduce((s, it) => s + (Number(it.requestedQuantity) || 1), 0)
+                : (activeDelivery.donation?.quantity || activeDelivery.donation?.servings || 30)
+              const combinedTitle = isBasket
+                ? 'Combined Items'
+                : (activeDelivery.donation?.title || 'Food Donation')
+
+              return {
+                _id: activeDelivery._id,
+                orderNo: activeDelivery.orderNo || `FD-${activeDelivery._id.toString().slice(-8).toUpperCase()}`,
+                donorName: activeDelivery.donation?.donorOrganization || activeDelivery.donor?.fullName || 'Spice Garden',
+                donorPhone: activeDelivery.donation?.donorPhone || activeDelivery.donor?.phone || '+91 98200 44321',
+                courierPhone: activeDelivery.courierPhone || activeDelivery.volunteerInfo?.phone || activeDelivery.volunteer?.phone || '+91 98200 44321',
+                receiverOrg: profile.organizationName || req.user.fullName || 'Receiver Organization',
+                deliveryType: activeDelivery.deliveryType || 'volunteer_delivery',
+                isDirectPickup: activeDelivery.deliveryType === 'direct_pickup',
+                deliveryCode: receiverVisibleCode,
+                handoverCode: receiverVisibleCode,
+                status: activeDelivery.status,
+                volunteerStatus: activeDelivery.volunteerStatus,
+                stage: activeDelivery.stage || (activeDelivery.status === 'in_transit' ? 4 : 3),
+                courier: (activeDelivery.volunteer || activeDelivery.volunteerInfo?.name)
+                  ? {
+                      name: activeDelivery.volunteerInfo?.name || activeDelivery.volunteer?.fullName || 'Assigned Courier',
+                      transport: activeDelivery.volunteerInfo?.transportType || 'Volunteer Courier',
+                      eta: activeDelivery.eta || '~15 minutes',
+                      rating: activeDelivery.volunteerInfo?.rating || 5.0,
+                      phone: activeDelivery.courierPhone || activeDelivery.volunteerInfo?.phone || activeDelivery.volunteer?.phone || '+91 98200 44321',
+                      avatar: activeDelivery.volunteerInfo?.avatar || '',
+                    }
+                  : null,
+                donationTitle: combinedTitle,
+                servings: totalServings,
+                unit: isBasket ? 'items' : (activeDelivery.donation?.unit || 'Servings'),
+                items: activeDelivery.items || [],
+                isBasket,
+                dropoffAddress: activeDelivery.dropoffAddress || profile.dropoffAddress,
+                pickupAddress: activeDelivery.pickupAddress,
+                pickupWindow: activeDelivery.pickupWindow || 'Flexible',
+              }
+            })()
           : null,
+        latestCancelledDelivery,
+        latestCompletedDelivery,
         expiringSoon,
       },
       'Receiver dashboard retrieved successfully.'
@@ -336,7 +424,7 @@ export const getReceiverListings = asyncHandler(async (req, res) => {
     filter.$and = [expiryCondition]
   }
 
-  const rawListings = await FoodDonation.find(filter).populate('donor', 'fullName organizationName city')
+  const rawListings = await FoodDonation.find(filter).populate('donor', 'fullName organizationName city avatar phone')
 
   // Map & calculate distance in KM + live countdown
   const listingsWithDistance = rawListings.map((doc) => {
@@ -363,11 +451,20 @@ export const getReceiverListings = asyncHandler(async (req, res) => {
       }
     }
 
+    const donorOrgName = doc.donorOrganization || doc.donor?.organizationName || ''
+    const donorDisplayName = donorOrgName || doc.donor?.fullName || doc.donorName || 'Local Donor'
+    const donorIdStr = (doc.donor?._id || doc.donor)?.toString() || ''
+
     return {
       _id: doc._id,
       title: doc.title,
       category: doc.category,
-      donor: doc.donorOrganization || doc.donor?.organizationName || doc.donor?.fullName || doc.donorName || 'Local Donor',
+      donor: donorDisplayName,
+      donorId: donorIdStr,
+      donorName: doc.donor?.fullName || doc.donorName || 'Local Donor',
+      donorOrganization: donorOrgName,
+      donorAvatar: doc.donor?.avatar || '',
+      donorCity: doc.donor?.city || '',
       distance: distanceFormatted,
       distanceVal: distanceKm,
       servings: doc.servings || doc.quantity,
@@ -439,32 +536,91 @@ export const getListingById = asyncHandler(async (req, res) => {
 
 // 5. POST /api/receiver/requests
 export const createFoodRequest = asyncHandler(async (req, res) => {
-  const { listingId, servings, deliveryMethod, preferredDate, notes } = req.body
+  const { listingId, servings, deliveryMethod, preferredDate, notes, items } = req.body
   const userId = req.user._id
 
-  if (!listingId) throw new ApiError(400, 'Listing ID is required.')
+  // Determine whether it's a multi-item basket or single item
+  let requestItemsInput = []
+  if (Array.isArray(items) && items.length > 0) {
+    requestItemsInput = items
+  } else if (listingId) {
+    requestItemsInput = [{ listingId, servings: servings || 1 }]
+  } else {
+    throw new ApiError(400, 'Listing ID or items array is required.')
+  }
 
-  const listing = await FoodDonation.findById(listingId)
-  if (!listing) throw new ApiError(404, 'Food listing not found.')
+  // Extract all listing IDs
+  const listingIds = requestItemsInput
+    .map((it) => it.listingId || it.donationId || it._id)
+    .filter(Boolean)
+  if (listingIds.length === 0) {
+    throw new ApiError(400, 'At least one valid food item is required.')
+  }
+
+  const listings = await FoodDonation.find({ _id: { $in: listingIds } })
+  if (listings.length !== listingIds.length) {
+    throw new ApiError(404, 'One or more food listings were not found.')
+  }
+
+  // Fast map lookup
+  const listingMap = new Map()
+  listings.forEach((l) => listingMap.set(l._id.toString(), l))
+
+  // Validate that all items belong to the same donor/community!
+  const firstDonorId = listings[0].donor?.toString()
+  for (const listing of listings) {
+    if (listing.donor?.toString() !== firstDonorId) {
+      throw new ApiError(400, 'All food items in a basket must belong to the same community/donor.')
+    }
+  }
 
   const now = new Date()
-  const isPastExpiry =
-    (listing.bestBefore && listing.bestBefore <= now) ||
-    (listing.expiresAt && listing.expiresAt <= now)
+  const validatedItems = []
+  let totalRequestedUnits = 0
 
-  if (listing.status !== 'available' || isPastExpiry) {
-    if (isPastExpiry && listing.status === 'available') {
-      listing.status = 'expired'
-      await listing.save()
+  for (const inputItem of requestItemsInput) {
+    const lId = (inputItem.listingId || inputItem.donationId || inputItem._id)?.toString()
+    const listing = listingMap.get(lId)
+    if (!listing) continue
+
+    const isPastExpiry =
+      (listing.bestBefore && listing.bestBefore <= now) ||
+      (listing.expiresAt && listing.expiresAt <= now)
+
+    if (listing.status !== 'available' || isPastExpiry) {
+      if (isPastExpiry && listing.status === 'available') {
+        listing.status = 'expired'
+        await listing.save()
+      }
+      throw new ApiError(400, `"${listing.title}" is no longer available or has expired.`)
     }
-    throw new ApiError(400, 'This food donation is no longer available or has expired.')
+
+    const requestedQty = Number(inputItem.servings || inputItem.quantity) || 1
+    const availableQty = listing.servings || listing.quantity || 1
+    if (requestedQty > availableQty) {
+      throw new ApiError(
+        400,
+        `Requested quantity (${requestedQty}) for "${listing.title}" exceeds available amount (${availableQty}).`
+      )
+    }
+
+    totalRequestedUnits += requestedQty
+    validatedItems.push({
+      donation: listing._id,
+      title: listing.title,
+      requestedQuantity: requestedQty,
+      requestedUnit: listing.unit || 'Servings',
+      category: listing.category || 'Cooked Meals',
+      imageUrl: listing.imageUrl || '',
+    })
   }
 
-  const requestedQty = Number(servings) || 1
-  const availableQty = listing.servings || listing.quantity || 1
-  if (requestedQty > availableQty) {
-    throw new ApiError(400, `Requested servings (${requestedQty}) exceed available amount (${availableQty}).`)
+  if (validatedItems.length === 0) {
+    throw new ApiError(400, 'No valid available food items in request.')
   }
+
+  const primaryListing = listings[0]
+  const isBasket = validatedItems.length > 1
 
   const profile = await ReceiverProfile.findOne({ user: userId })
 
@@ -481,17 +637,23 @@ export const createFoodRequest = asyncHandler(async (req, res) => {
       ? 'direct_pickup'
       : 'volunteer_delivery'
 
+  const requestSummaryMessage = isBasket
+    ? (notes ? `${notes} (Basket: ${validatedItems.length} items, ${totalRequestedUnits} total units)` : `Combined basket request for ${validatedItems.length} items (${totalRequestedUnits} total units)`)
+    : (notes || `Request for ${validatedItems[0].requestedQuantity} ${validatedItems[0].requestedUnit}`)
+
   const newRequest = await FoodRequest.create({
-    donation: listing._id,
-    donor: listing.donor,
+    donation: primaryListing._id,
+    items: validatedItems,
+    isBasket,
+    donor: primaryListing.donor,
     receiver: userId,
     receiverName: profile?.contactPerson || req.user.fullName,
     receiverOrganization: profile?.organizationName || req.user.fullName || 'Receiver Organization',
     receiverPhone: profile?.phone || req.user.phone,
     receiverExchangesCount: completedCount,
-    message: notes || `Request for ${requestedQty} ${listing.unit || 'Servings'}`,
-    requestedQuantity: requestedQty,
-    requestedUnit: listing.unit || 'Servings',
+    message: requestSummaryMessage,
+    requestedQuantity: isBasket ? totalRequestedUnits : validatedItems[0].requestedQuantity,
+    requestedUnit: isBasket ? 'items' : validatedItems[0].requestedUnit,
     deliveryPreference: selectedDeliveryPreference,
     deliveryMethod: selectedDeliveryPreference,
     status: 'pending',
@@ -504,16 +666,20 @@ export const createFoodRequest = asyncHandler(async (req, res) => {
     await safeCreateNotification({
       user: userId,
       title: 'Request Submitted',
-      message: `Your request for ${requestedQty} servings of ${listing.title} has been submitted for review.`,
+      message: isBasket
+        ? `Your combined request for ${validatedItems.length} items has been submitted for review.`
+        : `Your request for ${validatedItems[0].requestedQuantity} servings of ${primaryListing.title} has been submitted for review.`,
       type: 'request',
       link: '/receiver/requests',
     })
   }
 
   // Notify the actual owner/donor of the listing (respects donor's newFoodRequest preference)
-  await createDonorNotification(listing.donor, {
+  await createDonorNotification(primaryListing.donor, {
     title: 'New Food Request',
-    message: `${req.user.fullName || profile?.organizationName || 'A receiver'} requested ${requestedQty} ${listing.unit || 'servings'} of "${listing.title}".`,
+    message: isBasket
+      ? `${req.user.fullName || profile?.organizationName || 'A receiver'} requested a combined basket of ${validatedItems.length} items (${totalRequestedUnits} total units).`
+      : `${req.user.fullName || profile?.organizationName || 'A receiver'} requested ${validatedItems[0].requestedQuantity} ${primaryListing.unit || 'servings'} of "${primaryListing.title}".`,
     category: 'newFoodRequest',
     type: 'request',
     link: '/donor/requests',
@@ -532,8 +698,8 @@ export const getReceiverRequests = asyncHandler(async (req, res) => {
 
   const filter = { receiver: userId }
   if (status && status !== 'all') {
-    if (status === 'approved') {
-      filter.status = { $in: ['approved', 'accepted'] }
+    if (status === 'completed' || status === 'approved') {
+      filter.status = { $in: ['completed', 'delivered', 'approved', 'accepted'] }
     } else {
       filter.status = status
     }
@@ -541,6 +707,7 @@ export const getReceiverRequests = asyncHandler(async (req, res) => {
 
   const requests = await FoodRequest.find(filter)
     .populate('donation')
+    .populate('items.donation')
     .populate('donor', 'fullName organizationName')
     .sort({ createdAt: -1 })
 
@@ -548,22 +715,51 @@ export const getReceiverRequests = asyncHandler(async (req, res) => {
   const counts = {
     all: allReqs.length,
     pending: allReqs.filter((r) => r.status === 'pending').length,
-    approved: allReqs.filter((r) => r.status === 'approved' || r.status === 'accepted').length,
+    completed: allReqs.filter((r) => ['completed', 'delivered', 'approved', 'accepted'].includes(r.status)).length,
     declined: allReqs.filter((r) => r.status === 'declined').length,
   }
 
-  const formatted = requests.map((r) => ({
-    _id: r._id,
-    title: r.donation?.title || 'Food Donation',
-    donor: r.donation?.donorOrganization || r.donor?.fullName || 'Local Donor',
-    servings: r.requestedQuantity,
-    unit: r.requestedUnit || 'servings',
-    date: r.preferredDate || r.createdAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-    method: r.deliveryPreference === 'direct_pickup' ? 'Self-Pickup' : 'Volunteer Courier',
-    category: r.donation?.category || 'Cooked Meals',
-    status: r.status === 'accepted' ? 'approved' : r.status,
-    imageUrl: r.donation?.imageUrl || '',
-  }))
+  const formatted = requests.map((r) => {
+    const isCompletedStatus = ['completed', 'delivered', 'approved', 'accepted'].includes(r.status)
+    const isBasket = (r.items && r.items.length > 1) || r.isBasket
+    const itemsList = r.items && r.items.length > 0 ? r.items : (r.donation ? [{
+      donation: r.donation._id,
+      title: r.donation.title,
+      requestedQuantity: r.requestedQuantity,
+      requestedUnit: r.requestedUnit,
+      category: r.donation.category,
+      imageUrl: r.donation.imageUrl,
+    }] : [])
+
+    const combinedTitle = isBasket
+      ? 'Combined Items'
+      : (r.donation?.title || 'Food Donation')
+    const totalServings = isBasket
+      ? itemsList.reduce((s, it) => s + (Number(it.requestedQuantity) || 1), 0)
+      : (r.requestedQuantity || 1)
+
+    return {
+      _id: r._id,
+      title: combinedTitle,
+      donor: r.donation?.donorOrganization || r.donor?.organizationName || r.donor?.fullName || 'Local Donor',
+      servings: totalServings,
+      unit: isBasket ? 'items' : (r.requestedUnit || 'servings'),
+      date: r.preferredDate || r.createdAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+      method: r.deliveryPreference === 'direct_pickup' ? 'Self-Pickup' : 'Volunteer Courier',
+      category: isBasket ? 'Multiple Categories' : (r.donation?.category || 'Cooked Meals'),
+      status: isCompletedStatus ? 'completed' : r.status,
+      imageUrl: itemsList[0]?.imageUrl || r.donation?.imageUrl || '',
+      items: itemsList,
+      isBasket,
+    }
+  })
+
+  // Sort with most recent at top and older ones at bottom
+  formatted.sort((a, b) => {
+    const timeB = new Date(b.updatedAt || b.createdAt || 0).getTime()
+    const timeA = new Date(a.updatedAt || a.createdAt || 0).getTime()
+    return timeB - timeA
+  })
 
   return res.status(200).json(
     new ApiResponse(200, { requests: formatted, counts }, 'Requests fetched.')
@@ -589,6 +785,9 @@ export const getReceiverPickups = asyncHandler(async (req, res) => {
   const { tab = 'in_progress' } = req.query
   const userId = req.user._id
 
+  // Auto-cancel any expired donations or active runs where food expired
+  await autoCancelExpiredDonationsAndExchanges()
+
   const inProgressStatuses = [
     'accepted',
     'ready_for_pickup',
@@ -603,6 +802,8 @@ export const getReceiverPickups = asyncHandler(async (req, res) => {
   let statusFilter
   if (tab === 'completed') {
     statusFilter = { $in: ['completed', 'delivered'] }
+  } else if (tab === 'cancelled') {
+    statusFilter = 'cancelled'
   } else {
     statusFilter = { $in: inProgressStatuses }
   }
@@ -612,11 +813,12 @@ export const getReceiverPickups = asyncHandler(async (req, res) => {
     status: statusFilter,
   })
     .populate('donation')
+    .populate('items.donation')
     .populate('donor', 'fullName city')
     .populate('volunteer')
     .sort({ updatedAt: -1 })
 
-  const [inProgressCount, completedCount] = await Promise.all([
+  const [inProgressCount, completedCount, cancelledCount] = await Promise.all([
     Exchange.countDocuments({
       receiver: userId,
       status: { $in: inProgressStatuses },
@@ -625,11 +827,20 @@ export const getReceiverPickups = asyncHandler(async (req, res) => {
       receiver: userId,
       status: { $in: ['completed', 'delivered'] },
     }),
+    Exchange.countDocuments({
+      receiver: userId,
+      status: 'cancelled',
+    }),
   ])
 
   const formatted = exchanges.map((ex) => {
     const isDirect = ex.deliveryType === 'direct_pickup'
     const isVolunteerCourier = ex.deliveryType === 'volunteer_delivery'
+
+    // Extract last cancellation note if cancelled
+    const lastCancelledTimeline = ex.status === 'cancelled'
+      ? (ex.timeline || []).filter((t) => t.step === 'cancelled').pop()
+      : null
 
     // Determine receiver-visible code:
     // Direct pickup: NEVER sent in advance. Only displayed if completed.
@@ -643,24 +854,34 @@ export const getReceiverPickups = asyncHandler(async (req, res) => {
       }
     }
 
+    const isBasket = (ex.items && ex.items.length > 1) || ex.isBasket
+    const basketTotalUnits = isBasket
+      ? ex.items.reduce((sum, it) => sum + (Number(it.requestedQuantity) || 1), 0)
+      : (ex.donation?.quantity || ex.donation?.servings || 24)
+    const combinedTitle = isBasket
+      ? 'Combined Items'
+      : (ex.donation?.title || 'Food Donation')
+
     return {
       _id: ex._id,
       orderNo: ex.orderNo || `FD-${ex._id.toString().slice(-8).toUpperCase()}`,
-      title: ex.donation?.title || 'Food Donation',
-      servings: ex.donation?.quantity || ex.donation?.servings || 24,
-      unit: ex.donation?.unit || 'servings',
+      title: combinedTitle,
+      servings: basketTotalUnits,
+      unit: isBasket ? 'items' : (ex.donation?.unit || 'servings'),
+      items: ex.items || [],
+      isBasket,
       donor: ex.donation?.donorOrganization || ex.donor?.fullName || 'Local Donor',
       deliveryType: ex.deliveryType,
       isDirectPickup: isDirect,
       isVolunteerCourier,
-      courier: ex.volunteer
+      courier: (ex.volunteer || ex.volunteerInfo?.name)
         ? {
             name: ex.volunteerInfo?.name || ex.volunteer?.fullName || 'Assigned Courier',
             transport: ex.volunteerInfo?.transportType || 'Courier',
             eta: ex.eta || '~15 minutes',
             rating: typeof ex.volunteerInfo?.rating === 'number' ? ex.volunteerInfo.rating : 0,
             deliveriesCompleted: ex.volunteerInfo?.deliveriesCompleted || 0,
-            phone: ex.courierPhone || ex.volunteerInfo?.phone || '',
+            phone: ex.courierPhone || ex.volunteerInfo?.phone || ex.volunteer?.phone || '+91 98200 44321',
             avatar: ex.volunteerInfo?.avatar || '',
           }
         : null,
@@ -675,6 +896,11 @@ export const getReceiverPickups = asyncHandler(async (req, res) => {
       deliveryCode: codeForReceiver,
       stage: ex.stage || (ex.status === 'in_transit' ? 4 : ex.status === 'completed' ? 5 : 3),
       status: ex.status,
+      cancellationReason:
+        lastCancelledTimeline?.note ||
+        lastCancelledTimeline?.title ||
+        'Order was cancelled for food safety or courier issue.',
+      cancelledAt: lastCancelledTimeline?.time || ex.updatedAt,
       imageUrl: ex.donation?.imageUrl || '',
       feedback: ex.feedback,
       donorFeedback: ex.receiverToDonorFeedback,
@@ -685,10 +911,17 @@ export const getReceiverPickups = asyncHandler(async (req, res) => {
     }
   })
 
+  // Sort with most recent at top and older ones at bottom
+  formatted.sort((a, b) => {
+    const timeB = new Date(b.deliveredAt || b.cancelledAt || b.updatedAt || b.createdAt || 0).getTime()
+    const timeA = new Date(a.deliveredAt || a.cancelledAt || a.updatedAt || a.createdAt || 0).getTime()
+    return timeB - timeA
+  })
+
   return res.status(200).json(
     new ApiResponse(
       200,
-      { pickups: formatted, counts: { in_progress: inProgressCount, completed: completedCount } },
+      { pickups: formatted, counts: { in_progress: inProgressCount, completed: completedCount, cancelled: cancelledCount } },
       'Pickups fetched.'
     )
   )
@@ -806,6 +1039,18 @@ export const markOrderReceived = asyncHandler(async (req, res) => {
     link: '/receiver/history',
   })
 
+  // Notify volunteer safely without blocking
+  if (order.volunteer) {
+    await safeCreateNotification({
+      user: order.volunteer,
+      title: 'Delivery Handover Confirmed',
+      message: `Receiver confirmed safe arrival of ${order.donation?.title || 'the order'}. Delivery run complete!`,
+      type: 'delivery',
+      link: '/volunteer/history',
+      relatedId: order._id,
+    })
+  }
+
   return res.status(200).json(new ApiResponse(200, order, 'Order marked as received.'))
 })
 
@@ -851,6 +1096,16 @@ export const rateOrder = asyncHandler(async (req, res) => {
     // Immediately synchronize volunteer's rating & review statistics
     await syncVolunteerRating(order.volunteer).catch((err) => {
       console.error('Failed to sync volunteer rating:', err.message)
+    })
+
+    // Notify volunteer about rating
+    await safeCreateNotification({
+      user: order.volunteer,
+      title: 'New Receiver Rating Received',
+      message: `Receiver left a ${feedbackData.rating}★ rating for your delivery run.`,
+      type: 'impact',
+      link: '/volunteer/dashboard',
+      relatedId: order._id,
     })
 
     return res.status(200).json(
@@ -941,23 +1196,36 @@ export const getReceiverHistory = asyncHandler(async (req, res) => {
 
   const completedOrders = await Exchange.find(filter)
     .populate('donation')
+    .populate('items.donation')
     .populate('donor', 'fullName organizationName')
     .sort({ updatedAt: sort === 'asc' ? 1 : -1 })
 
-  let formatted = completedOrders.map((ex) => ({
-    _id: ex._id,
-    orderNo: ex.orderNo || `FD-${ex._id.toString().slice(-8).toUpperCase()}`,
-    foodItem: ex.donation?.title || 'Food Donation',
-    donor: ex.donation?.donorOrganization || ex.donor?.fullName || 'Local Donor',
-    qty: `${ex.donation?.quantity || ex.donation?.servings || 1} ${ex.donation?.unit || 'Servings'}`,
-    date: ex.deliveredAt
-      ? new Date(ex.deliveredAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-      : new Date(ex.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-    rawDate: ex.deliveredAt || ex.updatedAt,
-    method: ex.deliveryType === 'volunteer_delivery' ? 'Volunteer' : 'Self-Pickup',
-    status: 'Completed',
-    category: ex.donation?.category || 'Cooked Meals',
-  }))
+  let formatted = completedOrders.map((ex) => {
+    const isBasket = (ex.items && ex.items.length > 1) || ex.isBasket
+    const combinedTitle = isBasket
+      ? 'Combined Items'
+      : (ex.donation?.title || 'Food Donation')
+    const totalQty = isBasket
+      ? ex.items.reduce((s, it) => s + (Number(it.requestedQuantity) || 1), 0)
+      : (ex.donation?.quantity || ex.donation?.servings || 1)
+
+    return {
+      _id: ex._id,
+      orderNo: ex.orderNo || `FD-${ex._id.toString().slice(-8).toUpperCase()}`,
+      foodItem: combinedTitle,
+      donor: ex.donation?.donorOrganization || ex.donor?.fullName || 'Local Donor',
+      qty: `${totalQty} ${isBasket ? 'Servings' : (ex.donation?.unit || 'Servings')}`,
+      date: ex.deliveredAt
+        ? new Date(ex.deliveredAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+        : new Date(ex.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+      rawDate: ex.deliveredAt || ex.updatedAt,
+      method: ex.deliveryType === 'volunteer_delivery' ? 'Volunteer' : 'Self-Pickup',
+      status: 'Completed',
+      category: isBasket ? 'Multiple Categories' : (ex.donation?.category || 'Cooked Meals'),
+      items: ex.items || [],
+      isBasket,
+    }
+  })
 
   if (q && q.trim()) {
     const term = q.trim().toLowerCase()
@@ -968,6 +1236,13 @@ export const getReceiverHistory = asyncHandler(async (req, res) => {
         item.orderNo.toLowerCase().includes(term)
     )
   }
+
+  // Sort with most recent at top and older ones at bottom
+  formatted.sort((a, b) => {
+    const timeB = new Date(b.deliveredAt || b.rawDate || b.date || 0).getTime()
+    const timeA = new Date(a.deliveredAt || a.rawDate || a.date || 0).getTime()
+    return sort === 'asc' ? timeA - timeB : timeB - timeA
+  })
 
   return res.status(200).json(
     new ApiResponse(200, { history: formatted, total: formatted.length }, 'History fetched.')
@@ -1054,21 +1329,30 @@ export const getReceiverHistoryStats = asyncHandler(async (req, res) => {
 export const getOrderReceipt = asyncHandler(async (req, res) => {
   const order = await Exchange.findOne({ _id: req.params.id, receiver: req.user._id })
     .populate('donation')
+    .populate('items.donation')
     .populate('donor', 'fullName city')
 
   if (!order) throw new ApiError(404, 'Order not found.')
 
   const profile = await ReceiverProfile.findOne({ user: req.user._id })
 
+  const isBasket = (order.items && order.items.length > 1) || order.isBasket
+  const combinedTitle = isBasket
+    ? 'Combined Items'
+    : (order.donation?.title || 'Nutritious Meals')
+  const totalQty = isBasket
+    ? order.items.reduce((s, it) => s + (Number(it.requestedQuantity) || 1), 0)
+    : (order.donation?.quantity || order.donation?.servings || 40)
+
   const receiptData = {
     orderNo: order.orderNo || `FD-${order._id.toString().slice(-8).toUpperCase()}`,
-    foodItem: order.donation?.title || 'Nutritious Meals',
+    foodItem: combinedTitle,
     donor: order.donation?.donorOrganization || order.donor?.fullName || 'Local Community Partner',
     donorAddress: order.donation?.pickupAddress || 'San Francisco, CA',
     receiverOrg: profile?.organizationName || req.user.fullName || 'Receiver Organization',
     receiverTaxId: profile?.taxId || '84-2948102',
     receiverAddress: profile?.dropoffAddress || req.user.city || '87 Elm Street, Downtown, CA 90210',
-    quantity: `${order.donation?.quantity || order.donation?.servings || 40} servings`,
+    quantity: `${totalQty} servings`,
     date: order.deliveredAt
       ? new Date(order.deliveredAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
       : new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
@@ -1121,14 +1405,17 @@ export const updateReceiverProfile = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Please provide a valid email address.')
   }
 
+  const cleanDropoff = dropoffAddress ? dropoffAddress.trim() : ''
+
   const profile = await ReceiverProfile.findOneAndUpdate(
     { user: userId },
     {
       organizationName: organizationName.trim(),
       contactPerson: contactPerson.trim(),
-      phone: phone ? phone.trim() : '+1 (555) 280-4400',
+      phone: phone ? phone.trim() : req.user.phone || '+1 (555) 280-4400',
       email: email.trim().toLowerCase(),
-      dropoffAddress: dropoffAddress ? dropoffAddress.trim() : '',
+      dropoffAddress: cleanDropoff,
+      organizationAddress: cleanDropoff,
       ...(about !== undefined && { about: (about || '').trim() }),
       ...(website !== undefined && { website: (website || '').trim() }),
       ...(lat != null && !isNaN(Number(lat)) && { lat: Number(lat) }),
@@ -1141,7 +1428,19 @@ export const updateReceiverProfile = asyncHandler(async (req, res) => {
     fullName: contactPerson.trim(),
     phone: phone ? phone.trim() : req.user.phone,
     email: email.trim().toLowerCase(),
+    ...(cleanDropoff && { address: cleanDropoff }),
   })
+
+  // Synchronize any active deliveries so volunteer tracking immediately reflects the new address
+  if (cleanDropoff) {
+    await Exchange.updateMany(
+      {
+        receiver: userId,
+        status: { $in: ['searching_for_volunteer', 'volunteer_assigned', 'picked_up_by_volunteer', 'picked_up', 'out_for_delivery', 'in_transit'] },
+      },
+      { $set: { dropoffAddress: cleanDropoff } }
+    )
+  }
 
   return res.status(200).json(new ApiResponse(200, profile, 'Profile updated successfully.'))
 })

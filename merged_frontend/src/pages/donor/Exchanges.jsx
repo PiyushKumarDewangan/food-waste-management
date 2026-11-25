@@ -17,6 +17,7 @@ import {
   Car,
   Footprints,
   AlertCircle,
+  AlertTriangle,
   Sparkles,
   KeyRound,
   Copy,
@@ -25,7 +26,14 @@ import {
 } from 'lucide-react'
 import donorService from '../../services/donorService'
 import { getFoodImageUrl, handleImageError } from '../../utils/imageHelper'
-import { formatQuantityUnit } from '../../utils/unitHelper'
+import {
+  formatQuantityUnit,
+  getCombinedFoodTitle,
+  isCombinedBasket,
+  getTotalUnits,
+  getOrderItems,
+} from '../../utils/unitHelper'
+import CombinedItemsBreakdown from '../../components/common/CombinedItemsBreakdown'
 import { useIsMobile } from '../../utils/deviceHelper'
 import LiveTrackingMap from '../../components/common/LiveTrackingMap'
 
@@ -50,7 +58,12 @@ export default function Exchanges() {
       setLoading(true)
       const res = await donorService.getExchanges(tab)
       if (res.data) {
-        setExchanges(res.data.exchanges || [])
+        const sorted = (res.data.exchanges || []).sort((a, b) => {
+          const timeB = new Date(b.deliveredAt || b.cancelledAt || b.updatedAt || b.createdAt || 0).getTime()
+          const timeA = new Date(a.deliveredAt || a.cancelledAt || a.updatedAt || a.createdAt || 0).getTime()
+          return timeB - timeA
+        })
+        setExchanges(sorted)
         if (res.data.counts) setCounts(res.data.counts)
       }
     } catch (err) {
@@ -136,11 +149,18 @@ export default function Exchanges() {
   }
 
   // Filter exchanges by handover type if selected
-  const filteredExchanges = exchanges.filter((ex) => {
-    if (typeFilter === 'volunteer') return ex.deliveryType === 'volunteer_delivery'
-    if (typeFilter === 'direct') return ex.deliveryType === 'direct_pickup'
-    return true
-  })
+  const filteredExchanges = exchanges
+    .filter((ex) => {
+      if (typeFilter === 'volunteer') return ex.deliveryType === 'volunteer_delivery'
+      if (typeFilter === 'direct') return ex.deliveryType === 'direct_pickup'
+      return true
+    })
+    .sort((a, b) => {
+      // Recent at the top, older at the bottom
+      const timeB = new Date(b.deliveredAt || b.cancelledAt || b.updatedAt || b.createdAt || 0).getTime()
+      const timeA = new Date(a.deliveredAt || a.cancelledAt || a.updatedAt || a.createdAt || 0).getTime()
+      return timeB - timeA
+    })
 
   // Helper for volunteer transport icon
   const getTransportIcon = (type) => {
@@ -338,10 +358,14 @@ export default function Exchanges() {
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <h3 className="text-base font-bold text-gray-900 truncate">
-                          {donation.title || 'Food Donation'}
+                          {isCombinedBasket(exchange)
+                            ? getCombinedFoodTitle(exchange)
+                            : (donation.title || 'Food Donation')}
                         </h3>
-                        <span className="text-xs text-gray-500 font-medium">
-                          • {formatQuantityUnit(donation.quantity, donation.unit)}
+                        <span className="text-xs text-gray-500 font-medium shrink-0">
+                          • {isCombinedBasket(exchange)
+                            ? `${getTotalUnits(exchange)} Servings`
+                            : formatQuantityUnit(donation.quantity, donation.unit)}
                         </span>
                       </div>
                       <p className="text-xs text-gray-600 mt-0.5">
@@ -353,6 +377,7 @@ export default function Exchanges() {
                           </span>
                         )}
                       </p>
+                      <CombinedItemsBreakdown items={getOrderItems(exchange)} />
                     </div>
                   </div>
 
@@ -374,6 +399,8 @@ export default function Exchanges() {
                       className={`px-3 py-1 rounded-full text-xs font-semibold capitalize ${
                         isCompleted
                           ? 'bg-gray-100 text-gray-700 border border-gray-200'
+                          : exchange.status === 'cancelled'
+                          ? 'bg-red-50 text-red-800 border border-red-200'
                           : 'bg-amber-50 text-amber-800 border border-amber-200'
                       }`}
                     >
@@ -383,7 +410,19 @@ export default function Exchanges() {
                 </div>
 
                 {/* VOLUNTEER SECTION */}
-                {isVolunteerDelivery && (
+                {exchange.status === 'cancelled' ? (
+                  <div className="p-4 rounded-xl bg-red-50/70 border border-red-200 flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-red-100 text-red-800 flex items-center justify-center font-bold text-xs shrink-0">
+                      <AlertTriangle className="w-5 h-5 text-red-600" />
+                    </div>
+                    <div className="min-w-0">
+                      <h4 className="text-sm font-bold text-gray-900">Exchange Cancelled</h4>
+                      <p className="text-xs text-red-700 mt-0.5">
+                        This delivery was cancelled because the food reached its safe consumption limit or courier reported an issue. Please safely discard expired food.
+                      </p>
+                    </div>
+                  </div>
+                ) : isVolunteerDelivery && (
                   exchange.status === 'searching_for_volunteer' || !exchange.volunteer ? (
                     <div className="p-4 rounded-xl bg-amber-50/70 border border-amber-200/80 flex items-center gap-3">
                       <div className="w-10 h-10 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center font-bold text-xs shrink-0 animate-pulse">

@@ -39,6 +39,22 @@ const timelineEntrySchema = new mongoose.Schema(
   { _id: false }
 )
 
+const exchangeItemSchema = new mongoose.Schema(
+  {
+    donation: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'FoodDonation',
+      required: true,
+    },
+    title: { type: String, default: '', trim: true },
+    requestedQuantity: { type: Number, default: 1 },
+    requestedUnit: { type: String, default: 'Servings' },
+    category: { type: String, default: '' },
+    imageUrl: { type: String, default: '' },
+  },
+  { _id: false }
+)
+
 const exchangeSchema = new mongoose.Schema(
   {
     donation: {
@@ -46,6 +62,11 @@ const exchangeSchema = new mongoose.Schema(
       ref: 'FoodDonation',
       required: true,
       index: true,
+    },
+    items: [exchangeItemSchema],
+    isBasket: {
+      type: Boolean,
+      default: false,
     },
     request: {
       type: mongoose.Schema.Types.ObjectId,

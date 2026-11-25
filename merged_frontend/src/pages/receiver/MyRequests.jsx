@@ -13,7 +13,8 @@ import {
 } from 'lucide-react'
 import receiverService from '../../services/receiverService'
 import { getFoodImageUrl, handleImageError } from '../../utils/imageHelper'
-import { formatQuantityUnit } from '../../utils/unitHelper'
+import { formatQuantityUnit, getFoodHeading, getOrderItems } from '../../utils/unitHelper'
+import CombinedItemsBreakdown from '../../components/common/CombinedItemsBreakdown'
 
 export default function MyRequests() {
   const navigate = useNavigate()
@@ -21,7 +22,7 @@ export default function MyRequests() {
 
   const [activeTab, setActiveTab] = useState('all')
   const [requests, setRequests] = useState([])
-  const [counts, setCounts] = useState({ all: 4, pending: 3, approved: 1, declined: 0 })
+  const [counts, setCounts] = useState({ all: 0, pending: 0, completed: 0, declined: 0 })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [cancellingId, setCancellingId] = useState(null)
@@ -30,10 +31,43 @@ export default function MyRequests() {
   const loadRequests = async (tab = activeTab) => {
     try {
       setLoading(true)
-      const res = await receiverService.getRequests(tab)
+      const res = await receiverService.getRequests('all')
       if (res.data) {
-        setRequests(res.data.requests || [])
-        if (res.data.counts) setCounts(res.data.counts)
+        let reqs = res.data.requests || []
+        // Treat accepted / approved / completed / delivered as completed
+        reqs = reqs.map((r) => {
+          if (['completed', 'delivered', 'approved', 'accepted'].includes(r.status)) {
+            return { ...r, status: 'completed' }
+          }
+          return r
+        })
+
+        const pendingCount = reqs.filter((r) => r.status === 'pending').length
+        const completedCount = reqs.filter((r) => ['completed', 'delivered'].includes(r.status)).length
+        const declinedCount = reqs.filter((r) => ['declined', 'cancelled'].includes(r.status)).length
+
+        setCounts({
+          all: reqs.length,
+          pending: pendingCount,
+          completed: completedCount,
+          declined: declinedCount,
+        })
+
+        if (tab === 'pending') {
+          reqs = reqs.filter((r) => r.status === 'pending')
+        } else if (tab === 'completed') {
+          reqs = reqs.filter((r) => ['completed', 'delivered'].includes(r.status))
+        } else if (tab === 'declined') {
+          reqs = reqs.filter((r) => ['declined', 'cancelled'].includes(r.status))
+        }
+
+        const sortedReqs = [...reqs].sort((a, b) => {
+          const timeB = new Date(b.updatedAt || b.createdAt || b.date || 0).getTime()
+          const timeA = new Date(a.updatedAt || a.createdAt || a.date || 0).getTime()
+          return timeB - timeA
+        })
+
+        setRequests(sortedReqs)
       }
     } catch (err) {
       setError('Unable to load requests.')
@@ -69,7 +103,7 @@ export default function MyRequests() {
   const tabs = [
     { id: 'all', label: 'All', count: counts.all },
     { id: 'pending', label: 'Pending', count: counts.pending },
-    { id: 'approved', label: 'Approved', count: counts.approved },
+    { id: 'completed', label: 'Completed', count: counts.completed },
     { id: 'declined', label: 'Declined', count: counts.declined },
   ]
 
@@ -152,7 +186,7 @@ export default function MyRequests() {
 
 function RequestRowCard({ request, onCancel, cancelling, onViewPickups }) {
   const isPending = request.status === 'pending'
-  const isApproved = request.status === 'approved' || request.status === 'accepted'
+  const isCompleted = ['completed', 'delivered', 'approved', 'accepted'].includes(request.status)
   const isDeclined = request.status === 'declined'
   const isCancelled = request.status === 'cancelled'
 
@@ -169,10 +203,10 @@ function RequestRowCard({ request, onCancel, cancelling, onViewPickups }) {
 
         <div className="min-w-0 space-y-1">
           <h3 className="text-sm sm:text-base font-bold text-gray-900 truncate">
-            {request.title}
+            {getFoodHeading(request, 'with_servings_suffix')}
           </h3>
           <p className="text-xs font-semibold text-gray-600">
-            {request.donor} · {formatQuantityUnit(request.servings, request.unit)}
+            {request.donor}
           </p>
 
           {/* Meta row: Date · Method · Category */}
@@ -194,6 +228,9 @@ function RequestRowCard({ request, onCancel, cancelling, onViewPickups }) {
             <span className="font-medium text-gray-500">{request.category}</span>
           </div>
 
+          {/* If combined basket, show breakdown of items */}
+          <CombinedItemsBreakdown items={getOrderItems(request)} />
+
           {/* Action buttons inside card */}
           <div className="pt-2">
             {isPending && (
@@ -206,12 +243,12 @@ function RequestRowCard({ request, onCancel, cancelling, onViewPickups }) {
               </button>
             )}
 
-            {isApproved && (
+            {isCompleted && (
               <button
                 onClick={onViewPickups}
                 className="px-3.5 py-1.5 rounded-xl bg-[#2E7D32] hover:bg-[#1B5E20] text-white text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
               >
-                <span>View in Pickups</span>
+                <span>View Pickups</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             )}
@@ -219,7 +256,7 @@ function RequestRowCard({ request, onCancel, cancelling, onViewPickups }) {
         </div>
       </div>
 
-      {/* Right Column: Status Badges (Matching Screenshot 4) */}
+      {/* Right Column: Status Badges */}
       <div className="flex sm:flex-col items-end justify-between sm:justify-center shrink-0">
         {isPending && (
           <span className="px-3 py-1 rounded-full text-xs font-semibold bg-[#FFF3CD] text-[#F59E0B] border border-amber-200/60 flex items-center gap-1.5">
@@ -228,10 +265,10 @@ function RequestRowCard({ request, onCancel, cancelling, onViewPickups }) {
           </span>
         )}
 
-        {isApproved && (
+        {isCompleted && (
           <span className="px-3 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-[#2E7D32] border border-emerald-200 flex items-center gap-1.5">
             <CheckCircle2 className="w-3.5 h-3.5" />
-            Approved
+            Completed
           </span>
         )}
 

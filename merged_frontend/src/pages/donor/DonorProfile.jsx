@@ -415,7 +415,7 @@ export default function DonorProfile() {
               <div>
                 <h2 className="text-lg font-bold text-gray-900">{fullName}</h2>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  Donor • Member since Oct 2025
+                  Donor • Member since {user?.createdAt ? new Date(user.createdAt).getFullYear() : '2026'}
                 </p>
                 {isEditing && (
                   <>
@@ -514,17 +514,17 @@ export default function DonorProfile() {
                 />
               </div>
 
-              {/* Organization Name */}
+              {/* Business / Establishment Name */}
               <div>
                 <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-2">
-                  Organization Name
+                  Business / Establishment Name
                 </label>
                 <input
                   type="text"
                   disabled={!isEditing}
                   value={organizationName}
                   onChange={(e) => setOrganizationName(e.target.value)}
-                  placeholder="Individual or Organization name"
+                  placeholder="e.g., Grand Hotel, Spice Bistro, Daily Bakery, or Personal Kitchen"
                   className={`w-full px-4 py-2.5 rounded-xl border text-xs outline-hidden transition-all ${
                     isEditing
                       ? 'border-gray-200 focus:border-[#2E7D32] bg-white'

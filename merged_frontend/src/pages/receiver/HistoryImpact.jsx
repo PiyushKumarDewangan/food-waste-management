@@ -14,6 +14,7 @@ import {
   Building,
 } from 'lucide-react'
 import receiverService from '../../services/receiverService'
+import CombinedItemsBreakdown from '../../components/common/CombinedItemsBreakdown'
 
 export default function HistoryImpact() {
   const [stats, setStats] = useState({
@@ -44,7 +45,14 @@ export default function HistoryImpact() {
         receiverService.getHistory({ q: searchTerm }),
       ])
       if (statsRes.data) setStats(statsRes.data)
-      if (histRes.data?.history) setHistory(histRes.data.history)
+      if (histRes.data?.history) {
+        const sorted = (histRes.data.history || []).sort((a, b) => {
+          const timeB = new Date(b.deliveredAt || b.rawDate || b.date || 0).getTime()
+          const timeA = new Date(a.deliveredAt || a.rawDate || a.date || 0).getTime()
+          return timeB - timeA
+        })
+        setHistory(sorted)
+      }
     } catch (err) {
       console.error('Error fetching history data:', err)
     } finally {
@@ -318,8 +326,11 @@ export default function HistoryImpact() {
               {history.length > 0 ? (
                 history.map((item) => (
                   <tr key={item._id} className="hover:bg-gray-50/60 transition-colors">
-                    <td className="py-3.5 px-4 font-bold text-gray-900 whitespace-nowrap">
-                      {item.foodItem}
+                    <td className="py-3.5 px-4 font-bold text-gray-900">
+                      <div>{item.foodItem}</div>
+                      {item.items && item.items.length > 1 && (
+                        <CombinedItemsBreakdown items={item.items} />
+                      )}
                     </td>
                     <td className="py-3.5 px-4 text-gray-600 whitespace-nowrap font-medium">
                       {item.donor}

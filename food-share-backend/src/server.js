@@ -2,9 +2,11 @@ import app from './app.js'
 import { env } from './config/env.js'
 import { connectDB } from './config/db.js'
 import { logger } from './utils/logger.js'
+import { startExpiryScheduler } from './utils/expiryManager.js'
 
 async function startServer() {
   await connectDB()
+  startExpiryScheduler()
 
   const server = app.listen(env.PORT, () => {
     logger.info(`FoodShare API listening on http://localhost:${env.PORT}`)

@@ -22,6 +22,11 @@ export default function Dashboard() {
     return <Navigate to="/volunteer" replace />
   }
 
+  // Seamlessly route admins to their complete Admin Dashboard
+  if (user?.role === 'admin') {
+    return <Navigate to="/admin/dashboard" replace />
+  }
+
   const handleLogout = async () => {
     await logout()
     navigate('/login')

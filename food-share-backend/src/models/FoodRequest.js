@@ -1,11 +1,49 @@
 import mongoose from 'mongoose'
 
+const foodRequestItemSchema = new mongoose.Schema(
+  {
+    donation: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'FoodDonation',
+      required: true,
+    },
+    title: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    requestedQuantity: {
+      type: Number,
+      default: 1,
+    },
+    requestedUnit: {
+      type: String,
+      default: 'Servings',
+    },
+    category: {
+      type: String,
+      default: '',
+    },
+    imageUrl: {
+      type: String,
+      default: '',
+    },
+  },
+  { _id: false }
+)
+
 const foodRequestSchema = new mongoose.Schema(
   {
     donation: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'FoodDonation',
       required: true,
+      index: true,
+    },
+    items: [foodRequestItemSchema],
+    isBasket: {
+      type: Boolean,
+      default: false,
       index: true,
     },
     donor: {

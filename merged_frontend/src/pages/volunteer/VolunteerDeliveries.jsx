@@ -14,20 +14,36 @@ import {
   RefreshCw,
   KeyRound,
   Check,
+  Bike,
+  ChevronDown,
+  Navigation,
 } from 'lucide-react'
 import { volunteerService } from '../../services/volunteerService'
 import LiveTrackingMap from '../../components/common/LiveTrackingMap'
+import PhoneContactModal from '../../components/volunteer/PhoneContactModal'
+import {
+  formatQuantityUnit,
+  getPackageWeightKg,
+  getFoodHeading,
+  getCombinedFoodTitle,
+  isCombinedBasket,
+  getOrderItems,
+  getTotalUnits,
+} from '../../utils/unitHelper'
+import CombinedItemsBreakdown from '../../components/common/CombinedItemsBreakdown'
 
 export default function VolunteerDeliveries() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { onRefreshCounts } = useOutletContext() || {}
 
-  const initialTab = searchParams.get('tab') === 'upcoming' ? 'upcoming' : 'active'
+  const initialTab = searchParams.get('tab') === 'upcoming' ? 'upcoming' : searchParams.get('tab') === 'completed' ? 'completed' : 'active'
   const [activeTab, setActiveTab] = useState(initialTab)
 
   const [activeDeliveries, setActiveDeliveries] = useState([])
+  const [completedDeliveries, setCompletedDeliveries] = useState([])
   const [availableList, setAvailableList] = useState([])
   const [loading, setLoading] = useState(true)
+  const [phoneModal, setPhoneModal] = useState(null)
 
   // Verification Code inputs
   // 4 digit inputs for pickup code
@@ -39,6 +55,11 @@ export default function VolunteerDeliveries() {
   const [deliverySubmitting, setDeliverySubmitting] = useState(false)
   const [claimLoadingId, setClaimLoadingId] = useState(null)
   const [transitLoading, setTransitLoading] = useState(false)
+
+  // Vehicle Switcher States (Task-specific, does not modify volunteer profile)
+  const [switchingVehicle, setSwitchingVehicle] = useState(false)
+  const [isVehicleSwitcherOpen, setIsVehicleSwitcherOpen] = useState(false)
+  const [selectedVehicleByTask, setSelectedVehicleByTask] = useState({})
 
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
@@ -53,13 +74,26 @@ export default function VolunteerDeliveries() {
       ])
 
       const allMy = myDelivsRes?.data?.deliveries || []
-      const activeOnly = allMy.filter((d) =>
-        ['volunteer_assigned', 'picked_up_by_volunteer', 'picked_up', 'out_for_delivery', 'in_transit'].includes(
-          d.status
+      const activeOnly = allMy
+        .filter((d) =>
+          ['volunteer_assigned', 'picked_up_by_volunteer', 'picked_up', 'out_for_delivery', 'in_transit'].includes(
+            d.status
+          )
         )
+        .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0))
+
+      // Recently completed deliveries at the top, older ones at the bottom
+      const compOnly = allMy
+        .filter((d) => ['completed', 'delivered'].includes(d.status))
+        .sort((a, b) => new Date(b.deliveredAt || b.updatedAt || b.createdAt || 0) - new Date(a.deliveredAt || a.updatedAt || a.createdAt || 0))
+
+      const availOnly = (availRes?.data?.deliveries || []).sort(
+        (a, b) => new Date(b.createdAt || b.updatedAt || 0) - new Date(a.createdAt || a.updatedAt || 0)
       )
+
       setActiveDeliveries(activeOnly)
-      setAvailableList(availRes?.data?.deliveries || [])
+      setCompletedDeliveries(compOnly)
+      setAvailableList(availOnly)
     } catch (err) {
       console.error('Error fetching deliveries:', err)
       setErrorMessage('Failed to load deliveries. Please try again.')
@@ -180,13 +214,15 @@ export default function VolunteerDeliveries() {
     }
   }
 
-  // Claim Available Task from Pool
-  const handleAcceptTask = async (deliveryId) => {
+  // Claim Available Task from Pool (Supports task-specific vehicle selection)
+  const handleAcceptTask = async (deliveryId, transportType = 'bicycle') => {
     try {
       setClaimLoadingId(deliveryId)
       setErrorMessage('')
-      await volunteerService.acceptDelivery(deliveryId)
-      setSuccessMessage('Task claimed successfully! Please proceed to pickup.')
+      await volunteerService.acceptDelivery(deliveryId, { transportType })
+      setSuccessMessage(
+        `Task claimed with ${transportType.charAt(0).toUpperCase() + transportType.slice(1)}! Please proceed to pickup.`
+      )
       setActiveTab('active')
       if (onRefreshCounts) onRefreshCounts()
       await loadData()
@@ -196,6 +232,31 @@ export default function VolunteerDeliveries() {
       )
     } finally {
       setClaimLoadingId(null)
+    }
+  }
+
+  // Switch Vehicle for Active Delivery Only (Does not modify volunteer permanent profile)
+  const handleSwitchActiveTransport = async (newVehicle) => {
+    if (!currentRun?._id || newVehicle === currentRun.volunteerInfo?.transportType) {
+      setIsVehicleSwitcherOpen(false)
+      return
+    }
+    try {
+      setSwitchingVehicle(true)
+      setErrorMessage('')
+      await volunteerService.switchDeliveryTransport(currentRun._id, newVehicle)
+      setSuccessMessage(
+        `Delivery vehicle updated to ${newVehicle.charAt(0).toUpperCase() + newVehicle.slice(1)} for this task! Your profile default remains unchanged.`
+      )
+      if (currentRun.volunteerInfo) {
+        currentRun.volunteerInfo.transportType = newVehicle
+      }
+      await loadData()
+    } catch (err) {
+      setErrorMessage(err.response?.data?.message || 'Failed to switch vehicle for this delivery.')
+    } finally {
+      setSwitchingVehicle(false)
+      setIsVehicleSwitcherOpen(false)
     }
   }
 
@@ -249,7 +310,10 @@ export default function VolunteerDeliveries() {
       currentRun.status
     )
   const isEnRoute =
-    currentRun && ['out_for_delivery', 'in_transit'].includes(currentRun.status)
+    currentRun &&
+    (['out_for_delivery', 'in_transit'].includes(currentRun.status) ||
+      currentRun.volunteerStatus === 'in_transit' ||
+      currentRun.status === 'picked_up_by_volunteer')
 
   return (
     <div className="space-y-6">
@@ -313,6 +377,25 @@ export default function VolunteerDeliveries() {
             {availableList.length}
           </span>
         </button>
+
+        <button
+          onClick={() => setActiveTab('completed')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            activeTab === 'completed'
+              ? 'bg-[#2E7D32] text-white shadow-xs'
+              : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
+          }`}
+        >
+          <CheckCircle className="w-4 h-4" />
+          <span>Completed</span>
+          <span
+            className={`text-[10px] px-2 py-0.5 rounded-full ${
+              activeTab === 'completed' ? 'bg-white/20 text-white' : 'bg-emerald-50 text-emerald-800'
+            }`}
+          >
+            {completedDeliveries.length}
+          </span>
+        </button>
       </div>
 
       {/* Alerts */}
@@ -360,27 +443,117 @@ export default function VolunteerDeliveries() {
                     </span>
                   </div>
                   <h3 className="text-xl sm:text-2xl font-extrabold text-gray-900 mt-1.5">
-                    {currentRun.donation?.quantity || 25} Servings of{' '}
-                    {currentRun.donation?.title || 'Cooked Meals'}
+                    {getFoodHeading(currentRun, 'volunteer')}
                   </h3>
+                  <CombinedItemsBreakdown items={getOrderItems(currentRun)} />
                   <p className="text-xs text-gray-500 mt-0.5">
                     {isPickedUp ? 'Deliver food to recipient shelter' : 'Collect food package from donor'}
                   </p>
+
+                  {/* Task-Specific Vehicle Badge & Live Switcher (Change 3) */}
+                  <div className="flex flex-wrap items-center gap-2 mt-3">
+                    <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-50 border border-gray-200 text-xs">
+                      <span className="text-gray-500 font-medium">Task Vehicle:</span>
+                      <span className="font-bold text-gray-800 flex items-center gap-1">
+                        {currentRun.volunteerInfo?.transportType === 'car'
+                          ? '🚗 Car'
+                          : currentRun.volunteerInfo?.transportType === 'motorcycle'
+                          ? '🛵 Motorcycle'
+                          : currentRun.volunteerInfo?.transportType === 'walking'
+                          ? '🚶 Walking'
+                          : '🚲 Bicycle'}
+                      </span>
+                    </div>
+
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setIsVehicleSwitcherOpen(!isVehicleSwitcherOpen)}
+                        disabled={switchingVehicle}
+                        className="px-3 py-1.5 rounded-xl bg-white border border-gray-200 hover:border-[#2E7D32] hover:text-[#2E7D32] text-xs font-semibold text-gray-700 transition-all shadow-2xs flex items-center gap-1.5 cursor-pointer"
+                        title="Switch vehicle for this delivery task only"
+                      >
+                        <Bike className="w-3.5 h-3.5 text-[#2E7D32]" />
+                        <span>{switchingVehicle ? 'Updating...' : 'Switch Vehicle for this Task'}</span>
+                        <ChevronDown className="w-3 h-3 text-gray-400" />
+                      </button>
+
+                      {isVehicleSwitcherOpen && (
+                        <div className="absolute left-0 mt-1.5 w-60 bg-white rounded-2xl shadow-xl border border-gray-100 p-2 z-30 animate-in fade-in zoom-in-95 duration-100">
+                          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider px-2 py-1">
+                            Switch Vehicle (This Task)
+                          </p>
+                          <div className="space-y-1">
+                            {[
+                              { id: 'bicycle', label: 'Bicycle', icon: '🚲', hint: 'Short range' },
+                              { id: 'motorcycle', label: 'Motorcycle', icon: '🛵', hint: 'Medium / fast' },
+                              { id: 'car', label: 'Car / Auto', icon: '🚗', hint: 'Long range (e.g. >15km)' },
+                              { id: 'walking', label: 'Walking', icon: '🚶', hint: 'Within 1-2 km' },
+                            ].map((v) => (
+                              <button
+                                key={v.id}
+                                type="button"
+                                onClick={() => handleSwitchActiveTransport(v.id)}
+                                className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
+                                  currentRun.volunteerInfo?.transportType === v.id
+                                    ? 'bg-emerald-50 text-[#2E7D32] font-bold'
+                                    : 'hover:bg-gray-50 text-gray-700'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2">
+                                  <span className="text-base">{v.icon}</span>
+                                  <span>{v.label}</span>
+                                </div>
+                                <span className="text-[10px] text-gray-400">{v.hint}</span>
+                              </button>
+                            ))}
+                          </div>
+                          <p className="text-[9px] text-gray-400 px-2 pt-2 border-t border-gray-100 mt-1">
+                            Permanent profile vehicle remains unchanged.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
-                <a
-                  href={`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(
-                    currentRun.donor?.address || currentRun.pickupAddress || 'Indore'
-                  )}&destination=${encodeURIComponent(
-                    currentRun.receiver?.address || currentRun.dropoffAddress || 'Indore'
-                  )}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-xs font-bold text-gray-700 transition-colors shadow-2xs self-start sm:self-auto cursor-pointer"
-                >
-                  <ExternalLink className="w-3.5 h-3.5 text-gray-400" />
-                  <span>Open Route</span>
-                </a>
+                {/* Upper Route Button: Opens overall exchange route from Donor to Receiver */}
+                {(() => {
+                  const donorAddress =
+                    currentRun.pickupAddress ||
+                    currentRun.donation?.pickupAddress ||
+                    currentRun.donor?.address ||
+                    ''
+                  const receiverAddress =
+                    currentRun.dropoffAddress ||
+                    currentRun.receiver?.address ||
+                    ''
+                  const activeTransport = currentRun.volunteerInfo?.transportType || 'bicycle'
+                  const travelMode =
+                    activeTransport === 'walking'
+                      ? 'walking'
+                      : activeTransport === 'bicycle'
+                      ? 'bicycling'
+                      : activeTransport === 'motorcycle'
+                      ? 'two_wheeler'
+                      : 'driving'
+                  const routeUrl = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(
+                    donorAddress
+                  )}&destination=${encodeURIComponent(receiverAddress)}&travelmode=${travelMode}`
+
+                  return (
+                    <a
+                      href={routeUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-xs font-bold text-gray-700 transition-colors shadow-2xs self-start sm:self-auto cursor-pointer"
+                      title="Open full exchange route from Donor to Receiver"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5 text-gray-400" />
+                      <span>Open Route</span>
+                    </a>
+                  )
+                })()}
               </div>
 
               {/* LIVE MAP TRACKING (Leaflet & OpenStreetMap) */}
@@ -400,8 +573,8 @@ export default function VolunteerDeliveries() {
                   pickupCoords={currentRun.pickupCoords || (currentRun.donation?.lat ? { lat: currentRun.donation.lat, lng: currentRun.donation.lng } : null)}
                   dropoffCoords={currentRun.dropoffCoords}
                   volunteerCoords={volunteerLiveCoords || currentRun.volunteerCoords}
-                  pickupAddress={currentRun.donor?.address || currentRun.pickupAddress || 'Donor Pickup'}
-                  dropoffAddress={currentRun.receiver?.address || currentRun.dropoffAddress || 'Receiver Drop-off'}
+                  pickupAddress={currentRun.pickupAddress || currentRun.donation?.pickupAddress || currentRun.donor?.address || 'Donor Pickup'}
+                  dropoffAddress={currentRun.dropoffAddress || currentRun.receiver?.address || 'Receiver Drop-off'}
                   volunteerName={currentRun.volunteerInfo?.name || 'Volunteer Courier'}
                   volunteerTransport={currentRun.volunteerInfo?.transportType || 'bicycle'}
                   status={currentRun.status}
@@ -424,15 +597,25 @@ export default function VolunteerDeliveries() {
                         Pickup Location
                       </span>
                     </div>
-                    {currentRun.donor?.phone && (
-                      <a
-                        href={`tel:${currentRun.donor.phone}`}
-                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-white border border-gray-200 text-xs font-semibold text-gray-700 hover:bg-gray-50 shadow-2xs"
-                      >
-                        <Phone className="w-3 h-3 text-gray-400" />
-                        <span>Call</span>
-                      </a>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const dPhone = currentRun.donor?.phone || currentRun.donation?.donorPhone || '+91 98200 44321'
+                        const dName = currentRun.donation?.donorOrganization || currentRun.donor?.fullName || 'Donor Partner'
+                        setPhoneModal({
+                          isOpen: true,
+                          title: 'Call Donor',
+                          name: dName,
+                          phone: dPhone,
+                          role: 'Donor',
+                        })
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-white border border-gray-200 text-xs font-semibold text-gray-700 hover:bg-gray-50 shadow-2xs cursor-pointer"
+                      title="View and copy donor phone number"
+                    >
+                      <Phone className="w-3 h-3 text-gray-400" />
+                      <span>Call Donor</span>
+                    </button>
                   </div>
 
                   <div>
@@ -440,11 +623,9 @@ export default function VolunteerDeliveries() {
                       {currentRun.donation?.donorOrganization || currentRun.donor?.fullName || 'Green Table Restaurant'}
                     </h4>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      {currentRun.donor?.address || currentRun.pickupAddress || '14 Park Street, Indore, Madhya Pradesh 452001'}
+                      {currentRun.pickupAddress || currentRun.donation?.pickupAddress || currentRun.donor?.address || 'Pickup Location'}
                     </p>
-                    {currentRun.donor?.phone && (
-                      <p className="text-xs text-gray-400 mt-1">Contact: {currentRun.donor.phone}</p>
-                    )}
+                    <p className="text-xs text-gray-400 mt-1">Contact: {currentRun.donor?.phone || 'No phone recorded'}</p>
                   </div>
                 </div>
 
@@ -459,24 +640,35 @@ export default function VolunteerDeliveries() {
                         Drop-off Location
                       </span>
                     </div>
-                    {currentRun.receiver?.phone && (
-                      <a
-                        href={`tel:${currentRun.receiver.phone}`}
-                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-white border border-gray-200 text-xs font-semibold text-gray-700 hover:bg-gray-50 shadow-2xs"
-                      >
-                        <Phone className="w-3 h-3 text-gray-400" />
-                        <span>Call</span>
-                      </a>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const rPhone = currentRun.receiver?.phone || '+91 98201 12345'
+                        const rName = currentRun.receiver?.organizationName || currentRun.receiver?.fullName || 'Receiver Partner'
+                        setPhoneModal({
+                          isOpen: true,
+                          title: 'Call Receiver',
+                          name: rName,
+                          phone: rPhone,
+                          role: 'Receiver',
+                        })
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-white border border-gray-200 text-xs font-semibold text-gray-700 hover:bg-gray-50 shadow-2xs cursor-pointer"
+                      title="View and copy receiver phone number"
+                    >
+                      <Phone className="w-3 h-3 text-gray-400" />
+                      <span>Call Receiver</span>
+                    </button>
                   </div>
 
                   <div>
                     <h4 className="text-sm font-bold text-gray-900">
-                      {currentRun.receiver?.fullName || 'Hope Harbor Shelter'}
+                      {currentRun.receiver?.organizationName || currentRun.receiver?.fullName || 'Receiver Partner'}
                     </h4>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      {currentRun.receiver?.address || currentRun.dropoffAddress || '42 River View Road, Indore, Madhya Pradesh 452003'}
+                      {currentRun.dropoffAddress || currentRun.receiver?.address || 'Drop-off Address'}
                     </p>
+                    <p className="text-xs text-gray-400 mt-1">Contact: {currentRun.receiver?.phone || 'No phone recorded'}</p>
                     <div className="mt-2 p-2.5 rounded-xl bg-amber-50/70 border border-amber-200/80 text-[11px] text-amber-900">
                       <strong>Drop-off Instructions:</strong> Use the service entrance, ask for the on-duty coordinator upon arrival.
                     </div>
@@ -489,7 +681,9 @@ export default function VolunteerDeliveries() {
                 <Package className="w-5 h-5 text-[#2E7D32] shrink-0" />
                 <div>
                   <span className="font-bold text-gray-900">Package Details:</span>{' '}
-                  {currentRun.donation?.quantity || 25} covered meal containers (approx. 8-9 kg). Handle with care. Keep containers upright during transit.
+                  {isCombinedBasket(currentRun)
+                    ? `${getCombinedFoodTitle(currentRun)} (~${getPackageWeightKg(getTotalUnits(currentRun), 'Servings')} kg package). Handle with care. Keep containers upright during transit.`
+                    : `${formatQuantityUnit(currentRun.donation?.quantity || 1, currentRun.donation?.unit || 'Servings')} of ${currentRun.donation?.title || 'Food Donation'} (~${getPackageWeightKg(currentRun.donation?.quantity, currentRun.donation?.unit)} kg package). Handle with care. Keep containers upright during transit.`}
                 </div>
               </div>
 
@@ -686,11 +880,17 @@ export default function VolunteerDeliveries() {
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">
                         Needs Courier
                       </span>
+                      {item.distance && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
+                          ~{item.distance}
+                        </span>
+                      )}
                     </div>
 
                     <h4 className="text-base font-bold text-gray-900">
-                      {servings} Servings of {title}
+                      {getFoodHeading(item, 'volunteer')}
                     </h4>
+                    <CombinedItemsBreakdown items={getOrderItems(item)} />
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs text-gray-600 pt-1">
                       <div>
@@ -708,11 +908,52 @@ export default function VolunteerDeliveries() {
                       <span>•</span>
                       <span>Recipient: {receiverName}</span>
                     </div>
+
+                    {/* Task Vehicle Selection (Change 3) */}
+                    <div className="pt-3 border-t border-gray-100 flex flex-wrap items-center gap-2">
+                      <span className="text-[11px] font-bold text-gray-600">Vehicle for this task:</span>
+                      <div className="inline-flex p-0.5 bg-gray-100 rounded-xl gap-1">
+                        {[
+                          { id: 'bicycle', label: 'Bicycle', icon: '🚲' },
+                          { id: 'motorcycle', label: 'Motorcycle', icon: '🛵' },
+                          { id: 'car', label: 'Car', icon: '🚗' },
+                          { id: 'walking', label: 'Walking', icon: '🚶' },
+                        ].map((veh) => {
+                          const isSelected =
+                            (selectedVehicleByTask[item._id] || item.suggestedTransport || 'bicycle') === veh.id
+                          return (
+                            <button
+                              key={veh.id}
+                              type="button"
+                              onClick={() =>
+                                setSelectedVehicleByTask((prev) => ({ ...prev, [item._id]: veh.id }))
+                              }
+                              className={`px-2 py-1 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1 cursor-pointer ${
+                                isSelected
+                                  ? 'bg-white text-[#2E7D32] shadow-2xs'
+                                  : 'text-gray-500 hover:text-gray-800'
+                              }`}
+                            >
+                              <span>{veh.icon}</span>
+                              <span>{veh.label}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                      <span className="text-[10px] text-gray-400">
+                        (Profile default remains unchanged)
+                      </span>
+                    </div>
                   </div>
 
                   <div className="shrink-0 flex items-center">
                     <button
-                      onClick={() => handleAcceptTask(item._id)}
+                      onClick={() =>
+                        handleAcceptTask(
+                          item._id,
+                          selectedVehicleByTask[item._id] || item.suggestedTransport || 'bicycle'
+                        )
+                      }
                       disabled={claimLoadingId === item._id}
                       className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-[#2E7D32] hover:bg-[#256828] text-white text-xs font-bold shadow-xs transition-colors disabled:opacity-50 cursor-pointer flex items-center justify-center gap-1.5"
                     >
@@ -726,6 +967,100 @@ export default function VolunteerDeliveries() {
           )}
         </div>
       )}
+
+      {/* Tab 3: Completed Deliveries */}
+      {activeTab === 'completed' && (
+        <div className="space-y-4">
+          {completedDeliveries.length === 0 ? (
+            <div className="bg-white rounded-3xl border border-gray-100 shadow-xs p-10 text-center space-y-3">
+              <div className="w-12 h-12 mx-auto rounded-2xl bg-emerald-50 text-[#2E7D32] flex items-center justify-center">
+                <CheckCircle className="w-6 h-6" />
+              </div>
+              <h4 className="text-base font-bold text-gray-800">No Completed Deliveries Yet</h4>
+              <p className="text-xs text-gray-500 max-w-sm mx-auto">
+                Completed deliveries will appear here with delivery details, recipient confirmation, and the completed status tag.
+              </p>
+              <button
+                onClick={() => setActiveTab('upcoming')}
+                className="mt-2 px-5 py-2.5 rounded-xl bg-[#2E7D32] hover:bg-[#256828] text-white text-xs font-bold shadow-xs transition-colors cursor-pointer inline-flex items-center gap-1.5"
+              >
+                <Package className="w-3.5 h-3.5" />
+                <span>Browse Available Tasks</span>
+              </button>
+            </div>
+          ) : (
+            completedDeliveries.map((item) => (
+              <div
+                key={item._id}
+                className="bg-white rounded-3xl border border-gray-100 p-6 shadow-xs hover:border-gray-200 transition-all flex flex-col md:flex-row md:items-center justify-between gap-6"
+              >
+                <div className="space-y-2 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono text-gray-400">
+                      #{item.orderNo || item._id.slice(-6).toUpperCase()}
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-[#2E7D32] border border-emerald-200">
+                      <CheckCircle className="w-3 h-3" />
+                      Completed
+                    </span>
+                  </div>
+
+                  <h4 className="text-base font-bold text-gray-900">
+                    {getFoodHeading(item, 'volunteer')}
+                  </h4>
+                  <CombinedItemsBreakdown items={getOrderItems(item)} />
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs text-gray-600 pt-1">
+                    <div className="p-3 rounded-xl bg-gray-50 border border-gray-100">
+                      <span className="font-bold text-gray-800 block text-[10px] text-gray-400 uppercase">Pickup Location:</span>
+                      <p className="font-bold text-gray-800 mt-0.5">
+                        {item.donation?.donorOrganization || item.donor?.fullName || 'Donor Partner'}
+                      </p>
+                      <p className="text-[11px] text-gray-500">
+                        {item.donor?.address || item.pickupAddress || 'Pickup Location'}
+                      </p>
+                    </div>
+                    <div className="p-3 rounded-xl bg-gray-50 border border-gray-100">
+                      <span className="font-bold text-gray-800 block text-[10px] text-gray-400 uppercase">Drop-off Recipient:</span>
+                      <p className="font-bold text-gray-800 mt-0.5">
+                        {item.receiver?.organizationName || item.receiver?.fullName || 'Community Receiver'}
+                      </p>
+                      <p className="text-[11px] text-gray-500">
+                        {item.receiver?.address || item.dropoffAddress || 'Drop-off Location'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="shrink-0 flex sm:flex-col items-end justify-center text-right">
+                  <span className="text-xs font-bold text-[#2E7D32] bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-100">
+                    Handover Verified ✓
+                  </span>
+                  <span className="text-[10px] text-gray-500 mt-1 font-medium">
+                    {item.deliveredAt || item.updatedAt
+                      ? `Delivered ${new Date(item.deliveredAt || item.updatedAt).toLocaleDateString('en-US', {
+                          month: 'short',
+                          day: 'numeric',
+                          year: 'numeric',
+                        })}`
+                      : 'Delivered successfully'}
+                  </span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* Phone Contact Modal (Copy Phone Option) */}
+      <PhoneContactModal
+        isOpen={Boolean(phoneModal)}
+        onClose={() => setPhoneModal(null)}
+        title={phoneModal?.title}
+        name={phoneModal?.name}
+        phone={phoneModal?.phone}
+        role={phoneModal?.role}
+      />
     </div>
   )
 }

@@ -2,10 +2,12 @@ import { useState } from 'react'
 import { AlertTriangle, X } from 'lucide-react'
 
 export default function ReportIssueModal({ isOpen, onClose, onConfirm, deliveryId, loading }) {
-  const [reason, setReason] = useState('vehicle_problem')
+  const [reason, setReason] = useState('food_expired_spoiled')
   const [note, setNote] = useState('')
 
   if (!isOpen) return null
+
+  const isCancelType = reason === 'food_expired_spoiled' || reason === 'cannot_deliver_cancel'
 
   const handleSubmit = (e) => {
     e.preventDefault()
@@ -29,12 +31,44 @@ export default function ReportIssueModal({ isOpen, onClose, onConfirm, deliveryI
           </div>
           <h3 className="text-lg font-bold text-gray-900">Report a delivery issue</h3>
           <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
-            Do you need to stop this run due to a vehicle problem or emergency? We&apos;ll immediately offer it to the next available volunteer.
+            {isCancelType
+              ? 'If food is spoiled, expired, or you cannot deliver, the order will be cancelled immediately to protect food safety.'
+              : 'If you have a vehicle problem or personal emergency, we will reassign this run to the next available volunteer.'}
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-2.5">
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div className="space-y-2">
+            <label className="flex items-center gap-3 p-3 rounded-xl border border-gray-200 hover:border-gray-300 cursor-pointer transition-colors has-checked:border-red-500 has-checked:bg-red-50/40">
+              <input
+                type="radio"
+                name="issueReason"
+                value="food_expired_spoiled"
+                checked={reason === 'food_expired_spoiled'}
+                onChange={() => setReason('food_expired_spoiled')}
+                className="w-4 h-4 text-red-600 focus:ring-red-500"
+              />
+              <div>
+                <span className="text-xs font-semibold text-gray-800 block">Food Expired or Spoiled</span>
+                <span className="text-[10px] text-gray-400">Food is spoiled or safe consumption window passed (Cancels Order)</span>
+              </div>
+            </label>
+
+            <label className="flex items-center gap-3 p-3 rounded-xl border border-gray-200 hover:border-gray-300 cursor-pointer transition-colors has-checked:border-red-500 has-checked:bg-red-50/40">
+              <input
+                type="radio"
+                name="issueReason"
+                value="cannot_deliver_cancel"
+                checked={reason === 'cannot_deliver_cancel'}
+                onChange={() => setReason('cannot_deliver_cancel')}
+                className="w-4 h-4 text-red-600 focus:ring-red-500"
+              />
+              <div>
+                <span className="text-xs font-semibold text-gray-800 block">Cannot Complete Delivery</span>
+                <span className="text-[10px] text-gray-400">Unable to deliver to receiver (Cancels Run)</span>
+              </div>
+            </label>
+
             <label className="flex items-center gap-3 p-3 rounded-xl border border-gray-200 hover:border-gray-300 cursor-pointer transition-colors has-checked:border-red-500 has-checked:bg-red-50/40">
               <input
                 type="radio"
@@ -44,7 +78,10 @@ export default function ReportIssueModal({ isOpen, onClose, onConfirm, deliveryI
                 onChange={() => setReason('vehicle_problem')}
                 className="w-4 h-4 text-red-600 focus:ring-red-500"
               />
-              <span className="text-xs font-semibold text-gray-800">Vehicle problem</span>
+              <div>
+                <span className="text-xs font-semibold text-gray-800 block">Vehicle Breakdown / Problem</span>
+                <span className="text-[10px] text-gray-400">Food is fine, but need another volunteer to deliver</span>
+              </div>
             </label>
 
             <label className="flex items-center gap-3 p-3 rounded-xl border border-gray-200 hover:border-gray-300 cursor-pointer transition-colors has-checked:border-red-500 has-checked:bg-red-50/40">
@@ -56,7 +93,10 @@ export default function ReportIssueModal({ isOpen, onClose, onConfirm, deliveryI
                 onChange={() => setReason('personal_emergency')}
                 className="w-4 h-4 text-red-600 focus:ring-red-500"
               />
-              <span className="text-xs font-semibold text-gray-800">Personal emergency</span>
+              <div>
+                <span className="text-xs font-semibold text-gray-800 block">Personal Emergency</span>
+                <span className="text-[10px] text-gray-400">Need to stop run immediately (Reassigns to volunteer pool)</span>
+              </div>
             </label>
 
             <label className="flex items-center gap-3 p-3 rounded-xl border border-gray-200 hover:border-gray-300 cursor-pointer transition-colors has-checked:border-red-500 has-checked:bg-red-50/40">
@@ -68,7 +108,10 @@ export default function ReportIssueModal({ isOpen, onClose, onConfirm, deliveryI
                 onChange={() => setReason('safety_issue')}
                 className="w-4 h-4 text-red-600 focus:ring-red-500"
               />
-              <span className="text-xs font-semibold text-gray-800">Other safety issue</span>
+              <div>
+                <span className="text-xs font-semibold text-gray-800 block">Other Safety Issue</span>
+                <span className="text-[10px] text-gray-400">Unsafe conditions or unable to reach location</span>
+              </div>
             </label>
           </div>
 
@@ -89,15 +132,17 @@ export default function ReportIssueModal({ isOpen, onClose, onConfirm, deliveryI
             <button
               type="submit"
               disabled={loading}
-              className="flex-1 py-2.5 rounded-xl bg-red-600 text-white text-xs font-bold hover:bg-red-700 shadow-xs transition-colors disabled:opacity-50"
+              className="flex-1 py-2.5 rounded-xl bg-red-600 text-white text-xs font-bold hover:bg-red-700 shadow-xs transition-colors disabled:opacity-50 cursor-pointer"
             >
-              {loading ? 'Reassigning...' : 'Report & Reassign Run'}
+              {loading
+                ? isCancelType ? 'Cancelling...' : 'Reassigning...'
+                : isCancelType ? 'Report & Cancel Order' : 'Report & Reassign Run'}
             </button>
             <button
               type="button"
               onClick={onClose}
               disabled={loading}
-              className="flex-1 py-2.5 rounded-xl border border-gray-200 text-gray-700 text-xs font-semibold hover:bg-gray-50 transition-colors"
+              className="flex-1 py-2.5 rounded-xl border border-gray-200 text-gray-700 text-xs font-semibold hover:bg-gray-50 transition-colors cursor-pointer"
             >
               Cancel
             </button>

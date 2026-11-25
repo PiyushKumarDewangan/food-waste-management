@@ -10,6 +10,7 @@ import {
   MapPin,
   Utensils,
   AlertCircle,
+  ShoppingBag,
 } from 'lucide-react'
 import donorService from '../../services/donorService'
 import { formatUnit } from '../../utils/unitHelper'
@@ -30,7 +31,12 @@ export default function Requests() {
       setLoading(true)
       const res = await donorService.getRequests(tab)
       if (res.data) {
-        setRequests(res.data.requests || [])
+        const sorted = (res.data.requests || []).sort((a, b) => {
+          const timeB = new Date(b.updatedAt || b.createdAt || 0).getTime()
+          const timeA = new Date(a.updatedAt || a.createdAt || 0).getTime()
+          return timeB - timeA
+        })
+        setRequests(sorted)
         if (res.data.counts) setCounts(res.data.counts)
       }
     } catch (err) {
@@ -182,15 +188,34 @@ export default function Requests() {
                           • {req.receiverExchangesCount ?? 0} {req.receiverExchangesCount === 1 ? 'completed exchange' : 'completed exchanges'}
                         </span>
                       </div>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        <span className="text-xs text-gray-500">
-                          Requested:{' '}
-                          <strong className="text-gray-900">
-                            {req.donation?.title}
-                          </strong>{' '}
-                          ({req.requestedQuantity} {formatUnit(req.requestedUnit)})
-                        </span>
-                      </div>
+                      {req.isBasket || (req.items && req.items.length > 1) ? (
+                        <div className="mt-1 space-y-1.5">
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-[#2E7D32] border border-emerald-200">
+                            <ShoppingBag className="w-3.5 h-3.5" />
+                            Combined Items ({req.items.length} items · {req.requestedQuantity} total units)
+                          </span>
+                          <div className="bg-gray-50/80 rounded-xl p-2.5 border border-gray-100 space-y-1">
+                            {req.items.map((it, idx) => (
+                              <div key={idx} className="flex items-center justify-between text-xs text-gray-700">
+                                <span className="font-semibold text-gray-900">• {it.title || it.donation?.title}</span>
+                                <span className="text-gray-500 font-medium">
+                                  {it.requestedQuantity} {formatUnit(it.requestedUnit || 'Servings')}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-xs text-gray-500">
+                            Requested:{' '}
+                            <strong className="text-gray-900">
+                              {req.donation?.title}
+                            </strong>{' '}
+                            ({req.requestedQuantity} {formatUnit(req.requestedUnit)})
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
 

@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
-import { Navigation, Maximize2, Minimize2, MapPin, ExternalLink, ShieldCheck } from 'lucide-react'
+import {
+  Navigation,
+  Maximize2,
+  Minimize2,
+  MapPin,
+  ExternalLink,
+  ShieldCheck,
+  Plus,
+  Minus,
+  LocateFixed,
+} from 'lucide-react'
 
 // Default fallback coordinates (e.g., Indore/Central India or SF depending on project context)
 const DEFAULT_CENTER = { lat: 22.7196, lng: 75.8577 }
@@ -146,9 +156,6 @@ export default function LiveTrackingMap({
         maxZoom: 19,
       }).addTo(map)
 
-      // Add zoom control at bottom-right
-      L.control.zoom({ position: 'bottomright' }).addTo(map)
-
       mapInstanceRef.current = map
     }
 
@@ -219,25 +226,130 @@ export default function LiveTrackingMap({
     isExpanded,
   ])
 
-  // Center on volunteer
+  const [geoNotice, setGeoNotice] = useState('')
+
+  // Center on volunteer or current GPS location
   const handleRecenterVolunteer = () => {
-    if (mapInstanceRef.current) {
-      if (validVolunteer) {
-        mapInstanceRef.current.setView([validVolunteer.lat, validVolunteer.lng], 15)
-      } else {
-        const bounds = L.latLngBounds([
-          [finalPickup.lat, finalPickup.lng],
-          [finalDropoff.lat, finalDropoff.lng],
-        ])
-        mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50] })
-      }
+    if (!mapInstanceRef.current) return
+
+    if (typeof window !== 'undefined' && navigator?.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const lat = Number(pos.coords.latitude.toFixed(6))
+          const lng = Number(pos.coords.longitude.toFixed(6))
+          mapInstanceRef.current.setView([lat, lng], 15)
+          if (markersRef.current.volunteer) {
+            markersRef.current.volunteer.setLatLng([lat, lng])
+          }
+          setGeoNotice('Updated to your live GPS position')
+          setTimeout(() => setGeoNotice(''), 3500)
+        },
+        () => {
+          if (validVolunteer) {
+            mapInstanceRef.current.setView([validVolunteer.lat, validVolunteer.lng], 15)
+          } else {
+            const bounds = L.latLngBounds([
+              [finalPickup.lat, finalPickup.lng],
+              [finalDropoff.lat, finalDropoff.lng],
+            ])
+            mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50] })
+          }
+          setGeoNotice('Centering on active delivery route')
+          setTimeout(() => setGeoNotice(''), 3500)
+        },
+        { enableHighAccuracy: true, timeout: 6000 }
+      )
+    } else if (validVolunteer) {
+      mapInstanceRef.current.setView([validVolunteer.lat, validVolunteer.lng], 15)
+    } else {
+      const bounds = L.latLngBounds([
+        [finalPickup.lat, finalPickup.lng],
+        [finalDropoff.lat, finalDropoff.lng],
+      ])
+      mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50] })
     }
   }
 
-  // Open external Google Maps turn-by-turn navigation
-  const openExternalRoute = (destinationAddress) => {
-    const url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destinationAddress)}`
-    window.open(url, '_blank', 'noopener,noreferrer')
+  // Toggle fullscreen and invalidate size
+  const handleToggleFullscreen = () => {
+    const nextState = !isExpanded
+    setIsExpanded(nextState)
+    setTimeout(() => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.invalidateSize()
+      }
+    }, 300)
+  }
+
+  // Open external Google Maps turn-by-turn navigation from Volunteer Current Location to exact Donor / Receiver Profile Location
+  const openExternalRoute = (targetType = 'pickup') => {
+    // 1. Resolve destination:
+    // Strictly prioritize the real profile address entered by donor or receiver!
+    let destinationParam = ''
+    if (targetType === 'pickup') {
+      const cleanPickup = (pickupAddress || '').trim()
+      const isGeneric = !cleanPickup || ['Donor Pickup Location', 'Donor Pickup', 'Donor Address', 'Indore'].includes(cleanPickup)
+      if (!isGeneric) {
+        destinationParam = encodeURIComponent(cleanPickup)
+      } else if (pickupCoords?.lat != null && pickupCoords?.lng != null) {
+        destinationParam = `${pickupCoords.lat},${pickupCoords.lng}`
+      } else if (validPickup) {
+        destinationParam = `${validPickup.lat},${validPickup.lng}`
+      } else {
+        destinationParam = `${finalPickup.lat},${finalPickup.lng}`
+      }
+    } else {
+      // dropoff
+      const cleanDropoff = (dropoffAddress || '').trim()
+      const isGeneric = !cleanDropoff || ['Receiver Delivery Address', 'Receiver Drop-off', 'Receiver Address', 'Indore'].includes(cleanDropoff)
+      if (!isGeneric) {
+        destinationParam = encodeURIComponent(cleanDropoff)
+      } else if (dropoffCoords?.lat != null && dropoffCoords?.lng != null) {
+        destinationParam = `${dropoffCoords.lat},${dropoffCoords.lng}`
+      } else if (validDropoff) {
+        destinationParam = `${validDropoff.lat},${validDropoff.lng}`
+      } else {
+        destinationParam = `${finalDropoff.lat},${finalDropoff.lng}`
+      }
+    }
+
+    // 2. Travel mode mapped from volunteer vehicle
+    const travelMode =
+      volunteerTransport === 'walking'
+        ? 'walking'
+        : volunteerTransport === 'bicycle'
+        ? 'bicycling'
+        : volunteerTransport === 'motorcycle'
+        ? 'two_wheeler'
+        : 'driving'
+
+    const launchMapUrl = (originParam) => {
+      const url = `https://www.google.com/maps/dir/?api=1&origin=${originParam}&destination=${destinationParam}&travelmode=${travelMode}`
+      window.open(url, '_blank', 'noopener,noreferrer')
+    }
+
+    // 3. Origin: volunteer live GPS location (current device location)
+    if (typeof window !== 'undefined' && navigator?.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const lat = Number(pos.coords.latitude.toFixed(6))
+          const lng = Number(pos.coords.longitude.toFixed(6))
+          launchMapUrl(`${lat},${lng}`)
+        },
+        () => {
+          if (volunteerCoords?.lat != null && volunteerCoords?.lng != null) {
+            launchMapUrl(`${volunteerCoords.lat},${volunteerCoords.lng}`)
+          } else {
+            launchMapUrl('Current+Location')
+          }
+        },
+        { enableHighAccuracy: true, timeout: 3500 }
+      )
+    } else if (volunteerCoords?.lat != null && volunteerCoords?.lng != null) {
+      launchMapUrl(`${volunteerCoords.lat},${volunteerCoords.lng}`)
+    } else {
+      launchMapUrl('Current+Location')
+    }
   }
 
   return (
@@ -274,26 +386,55 @@ export default function LiveTrackingMap({
 
       {/* Top-Right Control Buttons */}
       <div className="absolute top-3 right-3 z-10 flex items-center gap-1.5">
+        {/* Vertical Zoom Controls (Plus & Minus) */}
+        <div className="flex flex-col rounded-xl overflow-hidden border border-gray-200 shadow-md bg-white/95 backdrop-blur-md">
+          <button
+            type="button"
+            onClick={() => mapInstanceRef.current?.zoomIn()}
+            className="p-2 hover:bg-emerald-50 text-gray-700 hover:text-[#2E7D32] transition-colors border-b border-gray-100 flex items-center justify-center cursor-pointer"
+            title="Zoom In (+)"
+            aria-label="Zoom In"
+          >
+            <Plus className="w-4 h-4 text-gray-800" />
+          </button>
+          <button
+            type="button"
+            onClick={() => mapInstanceRef.current?.zoomOut()}
+            className="p-2 hover:bg-emerald-50 text-gray-700 hover:text-[#2E7D32] transition-colors flex items-center justify-center cursor-pointer"
+            title="Zoom Out (-)"
+            aria-label="Zoom Out"
+          >
+            <Minus className="w-4 h-4 text-gray-800" />
+          </button>
+        </div>
+
         <button
           type="button"
           onClick={handleRecenterVolunteer}
-          className="p-2 bg-white/95 backdrop-blur-md hover:bg-white text-gray-700 rounded-xl border border-gray-200 shadow-md transition-colors cursor-pointer"
-          title="Re-center Live Route"
-          aria-label="Re-center Live Route"
+          className="p-2 bg-white/95 backdrop-blur-md hover:bg-emerald-50 text-gray-700 hover:text-[#2E7D32] rounded-xl border border-gray-200 shadow-md transition-colors cursor-pointer"
+          title="Current Location / Re-center Route"
+          aria-label="Current Location / Re-center Route"
         >
-          <Navigation className="w-4 h-4 text-emerald-700" />
+          <LocateFixed className="w-4 h-4 text-emerald-700" />
         </button>
 
         <button
           type="button"
-          onClick={() => setIsExpanded(!isExpanded)}
-          className="p-2 bg-white/95 backdrop-blur-md hover:bg-white text-gray-700 rounded-xl border border-gray-200 shadow-md transition-colors cursor-pointer"
+          onClick={handleToggleFullscreen}
+          className="p-2 bg-white/95 backdrop-blur-md hover:bg-emerald-50 text-gray-700 hover:text-[#2E7D32] rounded-xl border border-gray-200 shadow-md transition-colors cursor-pointer"
           title={isExpanded ? 'Minimize Map' : 'Full Screen Map'}
           aria-label={isExpanded ? 'Minimize Map' : 'Full Screen Map'}
         >
           {isExpanded ? <Minimize2 className="w-4 h-4 text-gray-700" /> : <Maximize2 className="w-4 h-4 text-gray-700" />}
         </button>
       </div>
+
+      {/* Geolocation feedback notice */}
+      {geoNotice && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-20 bg-gray-900/90 backdrop-blur-md text-white text-[11px] font-semibold px-3.5 py-1.5 rounded-full shadow-lg pointer-events-none transition-all">
+          {geoNotice}
+        </div>
+      )}
 
       {/* Bottom Floating Navigation Toolbar */}
       {showExternalNav && (
@@ -321,18 +462,18 @@ export default function LiveTrackingMap({
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
-                  onClick={() => openExternalRoute(pickupAddress)}
+                  onClick={() => openExternalRoute('pickup')}
                   className="px-3 py-1.5 bg-[#2E7D32] hover:bg-[#1B5E20] text-white rounded-xl text-xs font-bold shadow-md flex items-center gap-1.5 transition-colors cursor-pointer"
-                  title="Open GPS Navigation to Donor"
+                  title="Open GPS Navigation from current location to Donor"
                 >
                   <Navigation className="w-3.5 h-3.5" />
                   <span>Navigate to Pickup</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => openExternalRoute(dropoffAddress)}
+                  onClick={() => openExternalRoute('dropoff')}
                   className="px-3 py-1.5 bg-[#1565C0] hover:bg-[#0D47A1] text-white rounded-xl text-xs font-bold shadow-md flex items-center gap-1.5 transition-colors cursor-pointer"
-                  title="Open GPS Navigation to Receiver"
+                  title="Open GPS Navigation from current location to Receiver"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
                   <span>Navigate to Drop-off</span>
@@ -341,7 +482,7 @@ export default function LiveTrackingMap({
             ) : (
               <button
                 type="button"
-                onClick={() => openExternalRoute(dropoffAddress || pickupAddress)}
+                onClick={() => openExternalRoute('dropoff')}
                 className="px-3 py-1.5 bg-white/95 backdrop-blur-md hover:bg-white text-gray-700 rounded-xl text-xs font-bold border border-gray-200 shadow-md flex items-center gap-1.5 transition-colors cursor-pointer"
                 title="Open in Google Maps"
               >

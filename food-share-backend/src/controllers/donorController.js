@@ -11,6 +11,7 @@ import { VolunteerProfile } from '../models/VolunteerProfile.js'
 import { ReceiverProfile } from '../models/ReceiverProfile.js'
 import { Notification } from '../models/Notification.js'
 import { syncVolunteerRating } from './volunteerController.js'
+import { autoCancelExpiredDonationsAndExchanges } from '../utils/expiryManager.js'
 
 const safeCreateNotification = async (payload) => {
   try {
@@ -105,6 +106,8 @@ export const getMyDonorStats = asyncHandler(async (req, res) => {
 
 // GET /api/donors/me/donations — list donations posted by this donor
 export const getMyDonations = asyncHandler(async (req, res) => {
+  await autoCancelExpiredDonationsAndExchanges()
+
   const { status } = req.query
   const now = new Date()
 
@@ -403,6 +406,7 @@ export const getMyRequests = asyncHandler(async (req, res) => {
 
   const requests = await FoodRequest.find(filter)
     .populate('donation', 'title category quantity unit imageUrl pickupAddress pickupWindow status expiresAt bestBefore')
+    .populate('items.donation', 'title category quantity unit imageUrl pickupAddress pickupWindow status expiresAt bestBefore')
     .populate('receiver', 'fullName email phone')
     .sort({ createdAt: -1 })
 
@@ -462,7 +466,9 @@ export const respondToRequest = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Action must be 'accept' or 'decline'.")
   }
 
-  const request = await FoodRequest.findOne({ _id: req.params.id, donor: req.user._id }).populate('donation')
+  const request = await FoodRequest.findOne({ _id: req.params.id, donor: req.user._id })
+    .populate('donation')
+    .populate('items.donation')
   if (!request) throw new ApiError(404, 'Request not found.')
 
   if (action === 'decline') {
@@ -472,11 +478,15 @@ export const respondToRequest = asyncHandler(async (req, res) => {
     request.status = 'declined'
     await request.save()
 
+    const itemDesc = (request.items && request.items.length > 1)
+      ? `combined basket of ${request.items.length} items`
+      : `${request.requestedQuantity} ${request.requestedUnit} of ${request.donation?.title || 'food donation'}`
+
     // Send notification to receiver safely
     await safeCreateNotification({
       user: request.receiver,
       title: 'Request Declined',
-      message: `Your request for ${request.requestedQuantity} ${request.requestedUnit} of ${request.donation?.title || 'food donation'} was declined.`,
+      message: `Your request for ${itemDesc} was declined.`,
       type: 'request',
       link: '/receiver/requests',
     })
@@ -485,8 +495,22 @@ export const respondToRequest = asyncHandler(async (req, res) => {
   }
 
   // Prevent accepting expired food
-  if (request.donation) {
-    const now = new Date()
+  const now = new Date()
+  if (request.items && request.items.length > 0) {
+    for (const it of request.items) {
+      const don = it.donation
+      if (don) {
+        const isPastExpiry =
+          (don.bestBefore && don.bestBefore <= now) ||
+          (don.expiresAt && don.expiresAt <= now)
+        if (isPastExpiry && don.status !== 'completed') {
+          don.status = 'expired'
+          await don.save()
+          throw new ApiError(400, `Cannot accept request: "${don.title || 'one of the items'}" has expired.`)
+        }
+      }
+    }
+  } else if (request.donation) {
     const isPastExpiry =
       (request.donation.bestBefore && request.donation.bestBefore <= now) ||
       (request.donation.expiresAt && request.donation.expiresAt <= now)
@@ -519,9 +543,14 @@ export const respondToRequest = asyncHandler(async (req, res) => {
   request.status = 'accepted'
   await request.save()
 
-  // Update donation status to claimed
-  if (request.donation) {
-    await FoodDonation.findByIdAndUpdate(request.donation._id, { status: 'claimed' })
+  // Update donation status to claimed for all items
+  if (request.items && request.items.length > 0) {
+    const donationIds = request.items
+      .map((it) => it.donation?._id || it.donation)
+      .filter(Boolean)
+    await FoodDonation.updateMany({ _id: { $in: donationIds } }, { status: 'claimed' })
+  } else if (request.donation) {
+    await FoodDonation.findByIdAndUpdate(request.donation._id || request.donation, { status: 'claimed' })
   }
 
   const pickupCode = Math.floor(1000 + Math.random() * 9000).toString()
@@ -534,8 +563,31 @@ export const respondToRequest = asyncHandler(async (req, res) => {
 
   const receiverProfile = await ReceiverProfile.findOne({ user: request.receiver })
 
+  const exchangeItems =
+    request.items && request.items.length > 0
+      ? request.items.map((it) => ({
+          donation: it.donation?._id || it.donation,
+          title: it.title || it.donation?.title || 'Food Item',
+          requestedQuantity: it.requestedQuantity || 1,
+          requestedUnit: it.requestedUnit || 'Servings',
+          category: it.category || it.donation?.category || 'Cooked Meals',
+          imageUrl: it.imageUrl || it.donation?.imageUrl || '',
+        }))
+      : [
+          {
+            donation: request.donation?._id || request.donation,
+            title: request.donation?.title || 'Food Donation',
+            requestedQuantity: request.requestedQuantity || 1,
+            requestedUnit: request.requestedUnit || 'Servings',
+            category: request.donation?.category || 'Cooked Meals',
+            imageUrl: request.donation?.imageUrl || '',
+          },
+        ]
+
   let exchangeData = {
-    donation: request.donation._id,
+    donation: request.donation?._id || request.donation,
+    items: exchangeItems,
+    isBasket: Boolean(request.isBasket || exchangeItems.length > 1),
     request: request._id,
     donor: req.user._id,
     receiver: request.receiver,
@@ -658,6 +710,25 @@ export const respondToRequest = asyncHandler(async (req, res) => {
     await safeCreateNotification(notificationPayload)
   }
 
+  // If volunteer delivery, notify on-duty approved volunteers
+  if (exchangeData.deliveryType === 'volunteer_delivery') {
+    try {
+      const onDutyVolunteers = await VolunteerProfile.find({ isOnDuty: true, reviewStatus: 'approved' }).select('user')
+      for (const vp of onDutyVolunteers) {
+        await safeCreateNotification({
+          user: vp.user,
+          title: 'New Delivery Run Available',
+          message: `A new delivery for "${request.donation?.title || 'Food Donation'}" is available for pickup.`,
+          type: 'delivery',
+          link: '/volunteer/deliveries',
+          relatedId: exchange._id,
+        })
+      }
+    } catch (e) {
+      // Non-blocking
+    }
+  }
+
   return res.status(200).json(
     new ApiResponse(200, { request, exchange }, 'Request accepted and exchange scheduled.')
   )
@@ -665,6 +736,8 @@ export const respondToRequest = asyncHandler(async (req, res) => {
 
 // GET /api/donors/me/exchanges — list exchanges for this donor
 export const getMyExchanges = asyncHandler(async (req, res) => {
+  await autoCancelExpiredDonationsAndExchanges()
+
   const { status } = req.query
   const filter = { donor: req.user._id }
 
@@ -687,6 +760,7 @@ export const getMyExchanges = asyncHandler(async (req, res) => {
 
   const exchanges = await Exchange.find(filter)
     .populate('donation', 'title category quantity unit imageUrl pickupAddress pickupWindow')
+    .populate('items.donation', 'title category quantity unit imageUrl')
     .populate('receiver', 'fullName email phone')
     .populate('volunteer', 'fullName email phone')
     .sort({ createdAt: -1 })
@@ -730,6 +804,13 @@ export const getMyExchanges = asyncHandler(async (req, res) => {
       await ex.save()
     }
   }
+
+  // Sort exchanges with most recent at top and older ones at bottom
+  exchanges.sort((a, b) => {
+    const timeB = new Date(b.deliveredAt || b.cancelledAt || b.updatedAt || b.createdAt || 0).getTime()
+    const timeA = new Date(a.deliveredAt || a.cancelledAt || a.updatedAt || a.createdAt || 0).getTime()
+    return timeB - timeA
+  })
 
   const counts = {
     all: await Exchange.countDocuments({ donor: req.user._id }),
@@ -838,6 +919,18 @@ export const updateExchangeStatus = asyncHandler(async (req, res) => {
     })
   }
 
+  // Notify volunteer safely without blocking
+  if (exchange.volunteer) {
+    await safeCreateNotification({
+      user: exchange.volunteer,
+      title: 'Delivery Status Update',
+      message: `Donor updated delivery status to "${status.replace(/_/g, ' ')}".`,
+      type: 'delivery',
+      link: '/volunteer/deliveries',
+      relatedId: exchange._id,
+    })
+  }
+
   return res.status(200).json(new ApiResponse(200, { exchange }, 'Exchange status updated successfully.'))
 })
 
@@ -866,6 +959,14 @@ export const submitExchangeFeedback = asyncHandler(async (req, res) => {
   if (exchange.volunteer) {
     await syncVolunteerRating(exchange.volunteer).catch((err) => {
       console.error('Failed to sync volunteer rating from donor feedback:', err.message)
+    })
+    await safeCreateNotification({
+      user: exchange.volunteer,
+      title: 'New Donor Review Received',
+      message: `Donor submitted a ${numRating}★ rating for your food delivery run.`,
+      type: 'impact',
+      link: '/volunteer/dashboard',
+      relatedId: exchange._id,
     })
   }
 

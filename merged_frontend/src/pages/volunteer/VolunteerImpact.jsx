@@ -11,20 +11,31 @@ import {
   Bike,
   Sparkles,
   RefreshCw,
+  MapPin,
+  AlertCircle,
 } from 'lucide-react'
 import { volunteerService } from '../../services/volunteerService'
 
 export default function VolunteerImpact() {
   const [profileStats, setProfileStats] = useState(null)
+  const [reviewsList, setReviewsList] = useState([])
   const [loading, setLoading] = useState(true)
+  const [errorMessage, setErrorMessage] = useState('')
 
   const fetchStats = async () => {
     try {
       setLoading(true)
-      const res = await volunteerService.getProfile()
-      setProfileStats(res.data?.stats || res.data?.profile || {})
+      setErrorMessage('')
+      const [profileRes, reviewsRes] = await Promise.all([
+        volunteerService.getProfile().catch(() => null),
+        volunteerService.getReviews().catch(() => null),
+      ])
+
+      setProfileStats(profileRes?.data?.stats || profileRes?.data?.profile || {})
+      setReviewsList(reviewsRes?.data?.reviews || [])
     } catch (err) {
       console.error('Failed to load volunteer impact stats:', err)
+      setErrorMessage('Unable to load latest impact data. Please try again.')
     } finally {
       setLoading(false)
     }
@@ -37,9 +48,23 @@ export default function VolunteerImpact() {
   const totalTrips = profileStats?.totalDeliveriesCompleted || 0
   const totalMeals = profileStats?.totalMealsDelivered || 0
   const foodRescuedKg = profileStats?.foodRescuedKg ?? Math.round(totalMeals * 0.4)
-  const co2PreventedKg = profileStats?.co2PreventedKg ?? Math.round(foodRescuedKg * 1.83)
-  const hoursVolunteered = profileStats?.hoursVolunteered ?? Math.round(totalTrips * 1.5)
-  const treesEquivalent = co2PreventedKg > 0 ? Math.round(co2PreventedKg / 22) : 0
+  const totalDistanceKm =
+    profileStats?.totalDistanceKm != null
+      ? profileStats.totalDistanceKm
+      : totalTrips > 0
+      ? Number((totalTrips * 3.8).toFixed(1))
+      : 0
+  const hoursVolunteered =
+    profileStats?.hoursVolunteered != null
+      ? profileStats.hoursVolunteered
+      : totalTrips > 0
+      ? Number((totalTrips * 0.8).toFixed(1))
+      : 0
+
+  const calculatedRating =
+    reviewsList.length > 0
+      ? Number((reviewsList.reduce((acc, r) => acc + (r.rating || 5), 0) / reviewsList.length).toFixed(1))
+      : profileStats?.rating || 0
 
   const badge1Unlocked = totalTrips >= 10
   const badge2Unlocked = totalTrips >= 5
@@ -62,12 +87,25 @@ export default function VolunteerImpact() {
         <button
           onClick={fetchStats}
           disabled={loading}
-          className="flex items-center gap-2 self-start sm:self-auto px-4 py-2 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-xs font-semibold text-gray-700 transition-colors shadow-2xs disabled:opacity-50"
+          className="flex items-center gap-2 self-start sm:self-auto px-4 py-2 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-xs font-semibold text-gray-700 transition-colors shadow-2xs disabled:opacity-50 cursor-pointer"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
           <span>Refresh</span>
         </button>
       </div>
+
+      {/* Error Notice */}
+      {errorMessage && (
+        <div className="p-3.5 rounded-2xl bg-red-50 border border-red-200 text-red-800 text-xs font-semibold flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-red-500" />
+            <span>{errorMessage}</span>
+          </div>
+          <button onClick={() => setErrorMessage('')} className="text-red-500 hover:text-red-700 text-base font-bold cursor-pointer">
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Hero Banner */}
       <div className="bg-[#2E7D32] rounded-3xl p-6 sm:p-8 text-white shadow-sm relative overflow-hidden flex flex-col sm:flex-row sm:items-center justify-between gap-6">
@@ -132,19 +170,19 @@ export default function VolunteerImpact() {
           </div>
         </div>
 
-        {/* CO2 Prevented */}
+        {/* Total Distance Travelled (Replaced CO2 Prevented) */}
         <div className="bg-white rounded-2xl p-5 border border-gray-100 shadow-xs flex items-center justify-between">
           <div>
-            <span className="text-[11px] font-semibold text-gray-500">CO2 Prevented</span>
+            <span className="text-[11px] font-semibold text-gray-500">Total Distance Travelled</span>
             <div className="text-2xl sm:text-3xl font-extrabold text-gray-900 mt-1">
-              {co2PreventedKg} kg
+              {totalDistanceKm} km
             </div>
             <span className="text-[10px] text-blue-600 font-medium">
-              {co2PreventedKg > 0 ? `Equal to ${treesEquivalent} trees` : '0 kg CO2 prevented'}
+              {totalTrips > 0 ? `Across ${totalTrips} completed runs` : '0 km travelled yet'}
             </span>
           </div>
           <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
-            <Sparkles className="w-5 h-5" />
+            <MapPin className="w-5 h-5" />
           </div>
         </div>
 
@@ -294,44 +332,76 @@ export default function VolunteerImpact() {
           </div>
         </div>
 
-        {/* Community Thank-Yous */}
+        {/* Community Thank-Yous (Genuine Donor & Receiver Feedback) */}
         <div className="bg-white rounded-3xl border border-gray-100 p-6 shadow-xs space-y-4">
           <div className="flex items-center justify-between pb-3 border-b border-gray-100">
             <div>
               <h4 className="text-sm font-bold text-gray-900">Community Thank-Yous</h4>
-              <p className="text-[11px] text-gray-400">Notes from people along your route</p>
+              <p className="text-[11px] text-gray-400">Notes from donors & receivers along your routes</p>
             </div>
             <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-2.5 py-0.5 rounded-full border border-amber-100 flex items-center gap-1">
               <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
-              {profileStats?.rating > 0 ? `${profileStats.rating.toFixed(1)} Rating` : '0.0 Rating'}
+              {calculatedRating > 0 ? `${calculatedRating.toFixed(1)} Rating` : '0.0 Rating'}
             </span>
           </div>
 
-          {totalTrips === 0 ? (
-            <div className="py-10 text-center text-gray-400">
-              <Heart className="w-9 h-9 mx-auto text-gray-300 mb-2.5 stroke-1" />
+          {reviewsList.length === 0 ? (
+            <div className="py-10 text-center text-gray-400 space-y-2">
+              <Heart className="w-9 h-9 mx-auto text-gray-300 stroke-1" />
               <p className="text-xs font-bold text-gray-600">No community feedback yet</p>
-              <p className="text-[11px] text-gray-400 mt-1 max-w-xs mx-auto leading-relaxed">
-                Thank-you notes and ratings from donors and shelter receivers will appear here once you complete food deliveries.
+              <p className="text-[11px] text-gray-400 max-w-xs mx-auto leading-relaxed">
+                Thank-you notes and ratings from donors and shelter receivers will appear here once they review your completed food deliveries.
               </p>
             </div>
           ) : (
-            <div className="space-y-3">
-              <div className="p-3.5 rounded-2xl bg-gray-50 border border-gray-100 space-y-1">
-                <div className="flex text-amber-400 text-xs">★★★★★</div>
-                <p className="text-xs text-gray-800 italic">
-                  &quot;Always on time, kind, and careful with every meal container!&quot;
-                </p>
-                <span className="text-[10px] text-gray-400 block pt-0.5">— Hope Harbor Shelter</span>
-              </div>
+            <div className="space-y-3 max-h-[380px] overflow-y-auto pr-1">
+              {reviewsList.map((rev) => (
+                <div
+                  key={rev._id}
+                  className="p-3.5 rounded-2xl bg-gray-50 border border-gray-100 space-y-1.5 transition-colors hover:bg-gray-100/50"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-0.5">
+                      {[...Array(5)].map((_, i) => (
+                        <Star
+                          key={i}
+                          className={`w-3.5 h-3.5 ${
+                            i < (rev.rating || 5)
+                              ? 'fill-amber-400 text-amber-400'
+                              : 'fill-gray-200 text-gray-200'
+                          }`}
+                        />
+                      ))}
+                    </div>
+                    {rev.submittedAt && (
+                      <span className="text-[10px] text-gray-400">
+                        {new Date(rev.submittedAt).toLocaleDateString('en-US', {
+                          month: 'short',
+                          day: 'numeric',
+                          year: 'numeric',
+                        })}
+                      </span>
+                    )}
+                  </div>
 
-              <div className="p-3.5 rounded-2xl bg-gray-50 border border-gray-100 space-y-1">
-                <div className="flex text-amber-400 text-xs">★★★★★</div>
-                <p className="text-xs text-gray-800 italic">
-                  &quot;Makes every food handover fast and smooth. A true community hero.&quot;
-                </p>
-                <span className="text-[10px] text-gray-400 block pt-0.5">— Green Table Restaurant</span>
-              </div>
+                  {rev.comment ? (
+                    <p className="text-xs text-gray-800 italic leading-relaxed">
+                      &quot;{rev.comment}&quot;
+                    </p>
+                  ) : (
+                    <p className="text-xs text-gray-400 italic">No written comment provided.</p>
+                  )}
+
+                  <div className="flex items-center justify-between text-[10px] text-gray-500 pt-1 border-t border-gray-200/50">
+                    <span className="font-semibold text-gray-700">
+                      — {rev.reviewerName || 'Community Partner'}
+                    </span>
+                    <span className="px-2 py-0.5 rounded-md bg-white border border-gray-200 font-bold text-gray-600">
+                      {rev.reviewerRole || 'Partner'}
+                    </span>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>

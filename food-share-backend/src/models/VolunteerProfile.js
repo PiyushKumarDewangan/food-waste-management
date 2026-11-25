@@ -42,6 +42,14 @@ const volunteerProfileSchema = new mongoose.Schema(
     operatingNeighborhood: { type: String, trim: true, default: '' },
     smartDispatch: { type: Boolean, default: true },
 
+    // Notification Preferences
+    notificationPreferences: {
+      nearbyPickups: { type: Boolean, default: true },
+      urgentExpiryAlerts: { type: Boolean, default: true },
+      exchangeStatusUpdates: { type: Boolean, default: true },
+      weeklyImpactDigest: { type: Boolean, default: true },
+    },
+
     // Statistics and Impact
     totalDeliveriesCompleted: { type: Number, default: 0 },
     totalMealsDelivered: { type: Number, default: 0 },

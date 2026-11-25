@@ -12,6 +12,7 @@ import {
   rejectVolunteer,
   getMyDeliveries,
   getAvailableDeliveries,
+  getLatestDispatchRequest,
   acceptDelivery,
   cancelDelivery,
   reportIssueAndReassign,
@@ -19,6 +20,7 @@ import {
   startVolunteerDelivery,
   verifyVolunteerDelivery,
   updateDeliveryLocation,
+  switchDeliveryTransport,
 } from '../controllers/volunteerController.js'
 
 const router = Router()
@@ -29,8 +31,10 @@ router.get('/me/reviews', authenticate, authorize('volunteer'), getVolunteerRevi
 
 // Volunteer Delivery Operations
 router.get('/me/available-deliveries', authenticate, authorize('volunteer'), getAvailableDeliveries)
+router.get('/me/dispatch-request', authenticate, authorize('volunteer'), getLatestDispatchRequest)
 router.get('/me/deliveries', authenticate, authorize('volunteer'), getMyDeliveries)
 router.post('/me/deliveries/:id/accept', authenticate, authorize('volunteer'), acceptDelivery)
+router.patch('/me/deliveries/:id/transport', authenticate, authorize('volunteer'), switchDeliveryTransport)
 router.post('/me/deliveries/:id/cancel', authenticate, authorize('volunteer'), cancelDelivery)
 router.post('/me/deliveries/:id/report-issue', authenticate, authorize('volunteer'), reportIssueAndReassign)
 router.post('/me/deliveries/:id/verify-pickup', authenticate, authorize('volunteer'), verifyVolunteerPickup)
