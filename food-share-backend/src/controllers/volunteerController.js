@@ -1373,7 +1373,11 @@ export const verifyVolunteerDelivery = asyncHandler(async (req, res) => {
 
   if (exchange.donation) {
     const donationId = exchange.donation._id || exchange.donation
-    await FoodDonation.findByIdAndUpdate(donationId, { status: 'completed' })
+    const fd = await FoodDonation.findById(donationId)
+    if (fd && (fd.quantity <= 0 || fd.servings <= 0)) {
+      fd.status = 'completed'
+      await fd.save()
+    }
   }
 
   await exchange.save()

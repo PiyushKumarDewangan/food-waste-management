@@ -467,7 +467,8 @@ export const getReceiverListings = asyncHandler(async (req, res) => {
       donorCity: doc.donor?.city || '',
       distance: distanceFormatted,
       distanceVal: distanceKm,
-      servings: doc.servings || doc.quantity,
+      servings: doc.servings != null ? doc.servings : doc.quantity,
+      initialServings: doc.initialQuantity || doc.servings || doc.quantity,
       unit: doc.unit || 'servings',
       pickupWindow: doc.pickupWindow,
       deliveryTag: doc.deliveryOptions?.includes('volunteer')
@@ -596,7 +597,10 @@ export const createFoodRequest = asyncHandler(async (req, res) => {
     }
 
     const requestedQty = Number(inputItem.servings || inputItem.quantity) || 1
-    const availableQty = listing.servings || listing.quantity || 1
+    const availableQty = Number(listing.servings != null ? listing.servings : (listing.quantity != null ? listing.quantity : 0))
+    if (availableQty <= 0) {
+      throw new ApiError(400, `"${listing.title}" is no longer available or already fully claimed.`)
+    }
     if (requestedQty > availableQty) {
       throw new ApiError(
         400,
@@ -967,7 +971,11 @@ export const verifyDirectPickup = asyncHandler(async (req, res) => {
 
   if (order.donation) {
     const donationId = order.donation._id || order.donation
-    await FoodDonation.findByIdAndUpdate(donationId, { status: 'completed' })
+    const fd = await FoodDonation.findById(donationId)
+    if (fd && (fd.quantity <= 0 || fd.servings <= 0)) {
+      fd.status = 'completed'
+      await fd.save()
+    }
   }
 
   await order.save()

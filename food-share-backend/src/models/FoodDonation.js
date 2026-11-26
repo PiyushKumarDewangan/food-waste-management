@@ -39,7 +39,11 @@ const foodDonationSchema = new mongoose.Schema(
     quantity: {
       type: Number,
       required: true,
-      min: 1,
+      min: 0,
+    },
+    initialQuantity: {
+      type: Number,
+      default: null,
     },
     unit: {
       type: String,

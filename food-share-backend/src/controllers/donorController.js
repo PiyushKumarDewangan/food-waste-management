@@ -120,7 +120,7 @@ export const getMyDonations = asyncHandler(async (req, res) => {
 
   if (completedDonationIds.length > 0) {
     await FoodDonation.updateMany(
-      { _id: { $in: completedDonationIds }, status: { $ne: 'completed' } },
+      { _id: { $in: completedDonationIds }, quantity: { $lte: 0 }, status: { $ne: 'completed' } },
       { $set: { status: 'completed' } }
     )
   }
@@ -167,7 +167,7 @@ export const getDonationById = asyncHandler(async (req, res) => {
 
   const now = new Date()
   const completedExchange = await Exchange.findOne({ donation: donation._id, status: 'completed' })
-  if (completedExchange && donation.status !== 'completed') {
+  if (completedExchange && (donation.quantity <= 0 || donation.servings <= 0) && donation.status !== 'completed') {
     donation.status = 'completed'
     await donation.save()
   } else if (
@@ -337,6 +337,7 @@ export const createDonation = asyncHandler(async (req, res) => {
     description: description.trim(),
     quantity: Number(quantity),
     servings: Number(quantity),
+    initialQuantity: Number(quantity),
     unit: normalizedUnit,
     bestBefore: expiryDate,
     expiresAt: expiryDate,
@@ -543,14 +544,54 @@ export const respondToRequest = asyncHandler(async (req, res) => {
   request.status = 'accepted'
   await request.save()
 
-  // Update donation status to claimed for all items
+  // Option 1: Deduct requested quantity from each food donation listing
   if (request.items && request.items.length > 0) {
-    const donationIds = request.items
-      .map((it) => it.donation?._id || it.donation)
-      .filter(Boolean)
-    await FoodDonation.updateMany({ _id: { $in: donationIds } }, { status: 'claimed' })
+    for (const item of request.items) {
+      const donationId = item.donation?._id || item.donation
+      if (!donationId) continue
+
+      const foodDonation = await FoodDonation.findById(donationId)
+      if (foodDonation) {
+        const currentQty = Number(foodDonation.quantity != null ? foodDonation.quantity : (foodDonation.servings || 0))
+        const requestedQty = Number(item.requestedQuantity || item.servings || 1)
+        const remainingQty = Math.max(0, currentQty - requestedQty)
+
+        if (!foodDonation.initialQuantity) {
+          foodDonation.initialQuantity = Math.max(currentQty, requestedQty)
+        }
+        foodDonation.quantity = remainingQty
+        foodDonation.servings = remainingQty
+
+        if (remainingQty <= 0) {
+          foodDonation.status = 'claimed'
+        } else {
+          // If portions still remain, keep it available for other community receivers!
+          foodDonation.status = 'available'
+        }
+        await foodDonation.save()
+      }
+    }
   } else if (request.donation) {
-    await FoodDonation.findByIdAndUpdate(request.donation._id || request.donation, { status: 'claimed' })
+    const donationId = request.donation?._id || request.donation
+    const foodDonation = await FoodDonation.findById(donationId)
+    if (foodDonation) {
+      const currentQty = Number(foodDonation.quantity != null ? foodDonation.quantity : (foodDonation.servings || 0))
+      const requestedQty = Number(request.requestedQuantity || 1)
+      const remainingQty = Math.max(0, currentQty - requestedQty)
+
+      if (!foodDonation.initialQuantity) {
+        foodDonation.initialQuantity = Math.max(currentQty, requestedQty)
+      }
+      foodDonation.quantity = remainingQty
+      foodDonation.servings = remainingQty
+
+      if (remainingQty <= 0) {
+        foodDonation.status = 'claimed'
+      } else {
+        foodDonation.status = 'available'
+      }
+      await foodDonation.save()
+    }
   }
 
   const pickupCode = Math.floor(1000 + Math.random() * 9000).toString()
@@ -888,7 +929,11 @@ export const updateExchangeStatus = asyncHandler(async (req, res) => {
     exchange.stage = 5
     if (exchange.donation) {
       const donationId = exchange.donation._id || exchange.donation
-      await FoodDonation.findByIdAndUpdate(donationId, { status: 'completed' })
+      const fd = await FoodDonation.findById(donationId)
+      if (fd && (fd.quantity <= 0 || fd.servings <= 0)) {
+        fd.status = 'completed'
+        await fd.save()
+      }
     }
     await DonorProfile.findOneAndUpdate({ user: req.user._id }, { $inc: { totalMealsShared: 1 } })
   }

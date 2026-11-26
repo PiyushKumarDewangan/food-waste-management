@@ -180,7 +180,7 @@ export function BasketDrawer({
                           {it.listing.title}
                         </h4>
                         <p className="text-[11px] text-gray-500">
-                          {it.listing.category} · Max {maxQty} {it.listing.unit || 'servings'}
+                          {it.listing.category} · Max {maxQty} {it.listing.unit || 'servings'} available
                         </p>
                       </div>
 

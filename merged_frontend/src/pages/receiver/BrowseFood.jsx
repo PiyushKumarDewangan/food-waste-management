@@ -832,9 +832,19 @@ function FoodCard({
 
           {/* Meta Pills: Servings + Pickup Window */}
           <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
-            <span className="px-2.5 py-1 rounded-full bg-gray-100 text-gray-700 font-semibold">
-              {formatQuantityUnit(listing.servings, listing.unit)}
-            </span>
+            {listing.initialServings && listing.initialServings > listing.servings ? (
+              <span className="px-2.5 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-200 font-bold">
+                {formatQuantityUnit(listing.servings, listing.unit)} left
+              </span>
+            ) : listing.servings <= 3 ? (
+              <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-[#2E7D32] border border-emerald-200 font-bold">
+                {formatQuantityUnit(listing.servings, listing.unit)} left
+              </span>
+            ) : (
+              <span className="px-2.5 py-1 rounded-full bg-gray-100 text-gray-700 font-semibold">
+                {formatQuantityUnit(listing.servings, listing.unit)}
+              </span>
+            )}
             <span className="px-2.5 py-1 rounded-full bg-gray-100 text-gray-700 font-medium flex items-center gap-1">
               <Clock className="w-3 h-3 text-gray-400" />
               {listing.pickupWindow}
@@ -864,7 +874,7 @@ function FoodCard({
         {basketQuantity > 0 ? (
           <div className="flex items-center justify-between p-1.5 bg-emerald-50 border border-emerald-200 rounded-xl">
             <span className="text-xs font-bold text-[#2E7D32] pl-2">
-              In Basket: {basketQuantity} {formatQuantityUnit(basketQuantity, listing.unit)}
+              In Basket: {formatQuantityUnit(basketQuantity, listing.unit)}
             </span>
             <div className="flex items-center gap-1 bg-white border border-emerald-200 rounded-lg p-0.5">
               <button
