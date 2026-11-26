@@ -24,6 +24,7 @@ import { useAuth } from '../../context/AuthContext'
 import donorService from '../../services/donorService'
 import authService from '../../services/authService'
 import { getAvatarUrl } from '../../utils/imageHelper'
+import AddressAutocompleteInput from '../../components/common/AddressAutocompleteInput'
 
 export default function DonorProfile() {
   const { user, updateUser } = useAuth()
@@ -45,6 +46,7 @@ export default function DonorProfile() {
   const [phone, setPhone] = useState('')
   const [organizationName, setOrganizationName] = useState('')
   const [pickupAddress, setPickupAddress] = useState('')
+  const [coords, setCoords] = useState({ lat: null, lng: null })
   const [about, setAbout] = useState('')
   const [savedProfile, setSavedProfile] = useState({
     fullName: '',
@@ -52,6 +54,8 @@ export default function DonorProfile() {
     organizationName: '',
     pickupAddress: '',
     about: '',
+    lat: null,
+    lng: null,
   })
   const [pendingPhotoFile, setPendingPhotoFile] = useState(null)
 
@@ -92,11 +96,15 @@ export default function DonorProfile() {
           const loadedAbout = p?.about ||
             'Home cook and community volunteer. I love sharing surplus food from my weekend cooking sessions and garden harvest with neighbors in need.'
 
+          const loadedLat = p?.lat ?? null
+          const loadedLng = p?.lng ?? null
+
           setFullName(loadedFullName)
           setEmail(loadedEmail)
           setPhone(loadedPhone)
           setOrganizationName(loadedOrg)
           setPickupAddress(loadedAddress)
+          setCoords({ lat: loadedLat, lng: loadedLng })
           setAbout(loadedAbout)
           setSavedProfile({
             fullName: loadedFullName,
@@ -104,6 +112,8 @@ export default function DonorProfile() {
             organizationName: loadedOrg,
             pickupAddress: loadedAddress,
             about: loadedAbout,
+            lat: loadedLat,
+            lng: loadedLng,
           })
         }
       } catch (err) {
@@ -275,6 +285,7 @@ export default function DonorProfile() {
     setPhone(savedProfile.phone)
     setOrganizationName(savedProfile.organizationName)
     setPickupAddress(savedProfile.pickupAddress)
+    setCoords({ lat: savedProfile.lat, lng: savedProfile.lng })
     setAbout(savedProfile.about)
     setErrorMsg('')
     setIsEditing(false)
@@ -306,13 +317,15 @@ export default function DonorProfile() {
         }
       }
 
-      // 2. Save profile information
+      // 2. Save profile information with GPS coordinates
       await donorService.updateProfile({
         fullName,
         phone,
         organizationName,
         pickupAddress,
         about,
+        lat: coords.lat,
+        lng: coords.lng,
       })
 
       setSavedProfile({
@@ -321,6 +334,8 @@ export default function DonorProfile() {
         organizationName,
         pickupAddress,
         about,
+        lat: coords.lat,
+        lng: coords.lng,
       })
 
       setSuccessMsg('Profile updated successfully!')
@@ -536,24 +551,20 @@ export default function DonorProfile() {
 
             {/* Address */}
             <div>
-              <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-2">
-                Pickup Address
-              </label>
-              <div className="relative">
-                <MapPin className="w-4 h-4 text-gray-400 absolute left-3.5 top-3" />
-                <input
-                  type="text"
-                  required
-                  disabled={!isEditing}
-                  value={pickupAddress}
-                  onChange={(e) => setPickupAddress(e.target.value)}
-                  className={`w-full pl-10 pr-4 py-2.5 rounded-xl border text-xs outline-hidden transition-all ${
-                    isEditing
-                      ? 'border-gray-200 focus:border-[#2E7D32] bg-white'
-                      : 'border-transparent bg-gray-50 text-gray-700'
-                  }`}
-                />
-              </div>
+              <AddressAutocompleteInput
+                label="Pickup Address"
+                value={pickupAddress}
+                onChange={(addr) => setPickupAddress(addr)}
+                onSelectLocation={(loc) => {
+                  setPickupAddress(loc.address)
+                  if (loc.lat != null && loc.lng != null) {
+                    setCoords({ lat: loc.lat, lng: loc.lng })
+                  }
+                }}
+                disabled={!isEditing}
+                currentCoords={coords}
+                required
+              />
             </div>
 
             {/* About / Bio */}

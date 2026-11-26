@@ -20,6 +20,7 @@ import { useAuth } from '../../context/AuthContext'
 import receiverService from '../../services/receiverService'
 import authService from '../../services/authService'
 import { getAvatarUrl } from '../../utils/imageHelper'
+import AddressAutocompleteInput from '../../components/common/AddressAutocompleteInput'
 
 export default function ProfileNeeds() {
   const { user, updateUser } = useAuth()
@@ -622,24 +623,21 @@ export default function ProfileNeeds() {
 
             {/* Row 3: Drop-Off Address */}
             <div>
-              <label className="text-[11px] font-bold text-gray-600 uppercase tracking-wider mb-2 block">
-                Drop-off Address
-              </label>
-              <div className="relative">
-                <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
-                <input
-                  type="text"
-                  value={dropoffAddress}
-                  onChange={(e) => setDropoffAddress(e.target.value)}
-                  readOnly={!isEditing}
-                  placeholder="Enter drop-off address"
-                  className={`w-full pl-11 pr-4 py-3 rounded-2xl text-xs sm:text-sm font-medium transition-all ${
-                    isEditing
-                      ? 'bg-white border border-gray-300 focus:border-[#2E7D32] focus:ring-1 focus:ring-[#2E7D32] text-gray-900 outline-none shadow-2xs'
-                      : 'bg-[#F9FAFB] border border-transparent text-gray-800 cursor-default'
-                  }`}
-                />
-              </div>
+              <AddressAutocompleteInput
+                label="Drop-off Address"
+                value={dropoffAddress}
+                onChange={(addr) => setDropoffAddress(addr)}
+                onSelectLocation={(loc) => {
+                  setDropoffAddress(loc.address)
+                  if (loc.lat != null && loc.lng != null) {
+                    setCoords({ lat: loc.lat, lng: loc.lng })
+                  }
+                }}
+                disabled={!isEditing}
+                currentCoords={coords}
+                placeholder="Enter drop-off address"
+                required
+              />
             </div>
 
             {/* Row 4: About */}

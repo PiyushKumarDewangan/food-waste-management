@@ -23,6 +23,9 @@ const donorProfileSchema = new mongoose.Schema(
     totalDonationsPosted: { type: Number, default: 0 },
     totalMealsShared: { type: Number, default: 0 },
 
+    lat: { type: Number, default: null },
+    lng: { type: Number, default: null },
+
     // In-app Notification Preferences
     notificationPreferences: {
       newFoodRequest: { type: Boolean, default: true },

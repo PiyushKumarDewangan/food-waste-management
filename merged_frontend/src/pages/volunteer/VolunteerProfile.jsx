@@ -21,6 +21,7 @@ import { useAuth } from '../../context/AuthContext'
 import { volunteerService } from '../../services/volunteerService'
 import authService from '../../services/authService'
 import { getAvatarUrl } from '../../utils/imageHelper'
+import AddressAutocompleteInput from '../../components/common/AddressAutocompleteInput'
 
 export default function VolunteerProfile() {
   const { user, updateUser } = useAuth()
@@ -41,6 +42,8 @@ export default function VolunteerProfile() {
   const [phone, setPhone] = useState('')
   const [email, setEmail] = useState('')
   const [emergencyContact, setEmergencyContact] = useState('')
+  const [operatingNeighborhood, setOperatingNeighborhood] = useState('')
+  const [coords, setCoords] = useState({ lat: null, lng: null })
   const [transportType, setTransportType] = useState('bicycle')
   const [vehicleNumber, setVehicleNumber] = useState('')
   const [radiusKm, setRadiusKm] = useState(5)
@@ -51,6 +54,8 @@ export default function VolunteerProfile() {
     fullName: '',
     phone: '',
     emergencyContact: '',
+    operatingNeighborhood: '',
+    coords: { lat: null, lng: null },
     transportType: 'bicycle',
     vehicleNumber: '',
     radiusKm: 5,
@@ -94,6 +99,8 @@ export default function VolunteerProfile() {
           const initPhone = u.phone || user?.phone || ''
           const initEmail = u.email || user?.email || ''
           const initEmergency = p.emergencyContact || ''
+          const initNeighborhood = p.operatingNeighborhood || ''
+          const initCoords = { lat: p.lat ?? null, lng: p.lng ?? null }
           const initTransport = p.transportType || 'bicycle'
           const initVehicleNo = p.vehicleNumber || ''
           const initRadius = parseInt(p.serviceRadius) || 5
@@ -103,6 +110,8 @@ export default function VolunteerProfile() {
           setPhone(initPhone)
           setEmail(initEmail)
           setEmergencyContact(initEmergency)
+          setOperatingNeighborhood(initNeighborhood)
+          setCoords(initCoords)
           setTransportType(initTransport)
           setVehicleNumber(initVehicleNo)
           setRadiusKm(initRadius)
@@ -112,6 +121,8 @@ export default function VolunteerProfile() {
             fullName: initName,
             phone: initPhone,
             emergencyContact: initEmergency,
+            operatingNeighborhood: initNeighborhood,
+            coords: initCoords,
             transportType: initTransport,
             vehicleNumber: initVehicleNo,
             radiusKm: initRadius,
@@ -140,6 +151,8 @@ export default function VolunteerProfile() {
       fullName,
       phone,
       emergencyContact,
+      operatingNeighborhood,
+      coords,
       transportType,
       vehicleNumber,
       radiusKm,
@@ -164,6 +177,8 @@ export default function VolunteerProfile() {
     setFullName(savedSnapshot.fullName)
     setPhone(savedSnapshot.phone)
     setEmergencyContact(savedSnapshot.emergencyContact)
+    setOperatingNeighborhood(savedSnapshot.operatingNeighborhood)
+    setCoords(savedSnapshot.coords || { lat: null, lng: null })
     setTransportType(savedSnapshot.transportType)
     setVehicleNumber(savedSnapshot.vehicleNumber)
     setRadiusKm(savedSnapshot.radiusKm)
@@ -243,6 +258,9 @@ export default function VolunteerProfile() {
         fullName: fullName.trim(),
         phone: phone.trim(),
         emergencyContact: emergencyContact.trim(),
+        operatingNeighborhood: operatingNeighborhood.trim(),
+        lat: coords.lat,
+        lng: coords.lng,
         transportType,
         vehicleNumber: cleanedVehicleNumber,
         serviceRadius: `${clampedRadius} km`,
@@ -259,6 +277,8 @@ export default function VolunteerProfile() {
         fullName: fullName.trim(),
         phone: phone.trim(),
         emergencyContact: emergencyContact.trim(),
+        operatingNeighborhood: operatingNeighborhood.trim(),
+        coords,
         transportType,
         vehicleNumber: cleanedVehicleNumber,
         radiusKm: clampedRadius,
@@ -610,6 +630,24 @@ export default function VolunteerProfile() {
                   }`}
                 />
               </div>
+            </div>
+
+            {/* Row 3: Operating Neighborhood / Base Location */}
+            <div>
+              <AddressAutocompleteInput
+                label="Operating Neighborhood / Base Location"
+                value={operatingNeighborhood}
+                onChange={(addr) => setOperatingNeighborhood(addr)}
+                onSelectLocation={(loc) => {
+                  setOperatingNeighborhood(loc.address)
+                  if (loc.lat != null && loc.lng != null) {
+                    setCoords({ lat: loc.lat, lng: loc.lng })
+                  }
+                }}
+                disabled={!isEditing}
+                currentCoords={coords}
+                placeholder="Enter your base neighborhood or home address for dispatch routing"
+              />
             </div>
 
             {/* Vehicle Type Selection */}

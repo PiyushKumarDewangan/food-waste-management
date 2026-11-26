@@ -37,6 +37,7 @@ export const env = {
   MAX_UPLOAD_SIZE_MB: Number(process.env.MAX_UPLOAD_SIZE_MB) || 5,
 
   GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || '',
+  GOOGLE_MAPS_API_KEY: process.env.GOOGLE_MAPS_API_KEY || '',
 
   // SMTP (email sending) — optional in development; if unset, sendEmail.js
   // logs emails to the console instead of failing the request.

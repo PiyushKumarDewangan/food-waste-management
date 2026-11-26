@@ -10,10 +10,44 @@ import {
   Plus,
   Minus,
   LocateFixed,
+  Route as RouteIcon,
 } from 'lucide-react'
+import { getRoadRoute } from '../../services/mapsService'
 
 // Default fallback coordinates (e.g., Indore/Central India or SF depending on project context)
 const DEFAULT_CENTER = { lat: 22.7196, lng: 75.8577 }
+
+// Standard Google Encoded Polyline decoder
+function decodePolyline(encoded) {
+  if (!encoded || typeof encoded !== 'string') return []
+  const points = []
+  let index = 0, len = encoded.length
+  let lat = 0, lng = 0
+
+  while (index < len) {
+    let b, shift = 0, result = 0
+    do {
+      b = encoded.charCodeAt(index++) - 63
+      result |= (b & 0x1f) << shift
+      shift += 5
+    } while (b >= 0x20)
+    const dlat = ((result & 1) ? ~(result >> 1) : (result >> 1))
+    lat += dlat
+
+    shift = 0
+    result = 0
+    do {
+      b = encoded.charCodeAt(index++) - 63
+      result |= (b & 0x1f) << shift
+      shift += 5
+    } while (b >= 0x20)
+    const dlng = ((result & 1) ? ~(result >> 1) : (result >> 1))
+    lng += dlng
+
+    points.push([lat / 1e5, lng / 1e5])
+  }
+  return points
+}
 
 export default function LiveTrackingMap({
   pickupCoords,
@@ -33,6 +67,8 @@ export default function LiveTrackingMap({
   const markersRef = useRef({ pickup: null, dropoff: null, volunteer: null, polyline: null })
   const [isExpanded, setIsExpanded] = useState(false)
   const [routeInfo, setRouteInfo] = useState({ distanceKm: null, etaMinutes: null })
+  const [roadPolylinePoints, setRoadPolylinePoints] = useState(null)
+  const [isRoadRouted, setIsRoadRouted] = useState(false)
 
   // Resolve valid coordinates with realistic nearby fallbacks if missing
   const validPickup =
@@ -65,25 +101,65 @@ export default function LiveTrackingMap({
         }
       : null
 
-  // Calculate rough straight-line distance & ETA
+  // Compute real road routing via Google Routes API (with Haversine fallback)
   useEffect(() => {
-    if (finalPickup && finalDropoff) {
-      const R = 6371 // Earth radius in km
-      const dLat = ((finalDropoff.lat - finalPickup.lat) * Math.PI) / 180
-      const dLon = ((finalDropoff.lng - finalPickup.lng) * Math.PI) / 180
-      const a =
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos((finalPickup.lat * Math.PI) / 180) *
-          Math.cos((finalDropoff.lat * Math.PI) / 180) *
-          Math.sin(dLon / 2) *
-          Math.sin(dLon / 2)
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-      const dist = Number((R * c).toFixed(1))
-      // Average 20 km/h in city + 5 min buffer
-      const eta = Math.max(5, Math.round((dist / 20) * 60) + 4)
-      setRouteInfo({ distanceKm: dist, etaMinutes: eta })
+    let isCancelled = false
+
+    async function fetchRoadRoute() {
+      if (!finalPickup || !finalDropoff) return
+
+      try {
+        const route = await getRoadRoute({
+          originLat: finalPickup.lat,
+          originLng: finalPickup.lng,
+          destLat: finalDropoff.lat,
+          destLng: finalDropoff.lng,
+          travelMode: volunteerTransport,
+        })
+
+        if (isCancelled) return
+
+        if (route && route.encodedPolyline) {
+          const decoded = decodePolyline(route.encodedPolyline)
+          if (decoded && decoded.length > 0) {
+            setRoadPolylinePoints(decoded)
+            setIsRoadRouted(true)
+            setRouteInfo({
+              distanceKm: route.distanceKm,
+              etaMinutes: Math.max(1, Math.round(route.durationSeconds / 60)),
+            })
+            return
+          }
+        }
+      } catch (err) {
+        console.warn('Real road routing calculation fell back to straight-line:', err)
+      }
+
+      // Straight-line fallback if Routes API returned empty or failed
+      if (!isCancelled) {
+        setIsRoadRouted(false)
+        const R = 6371 // Earth radius in km
+        const dLat = ((finalDropoff.lat - finalPickup.lat) * Math.PI) / 180
+        const dLon = ((finalDropoff.lng - finalPickup.lng) * Math.PI) / 180
+        const a =
+          Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+          Math.cos((finalPickup.lat * Math.PI) / 180) *
+            Math.cos((finalDropoff.lat * Math.PI) / 180) *
+            Math.sin(dLon / 2) *
+            Math.sin(dLon / 2)
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+        const dist = Number((R * c).toFixed(1))
+        const eta = Math.max(5, Math.round((dist / 20) * 60) + 4)
+        setRouteInfo({ distanceKm: dist, etaMinutes: eta })
+      }
     }
-  }, [finalPickup.lat, finalPickup.lng, finalDropoff.lat, finalDropoff.lng])
+
+    fetchRoadRoute()
+
+    return () => {
+      isCancelled = true
+    }
+  }, [finalPickup.lat, finalPickup.lng, finalDropoff.lat, finalDropoff.lng, volunteerTransport])
 
   // Create Custom Leaflet DivIcons
   const createDonorIcon = () =>
@@ -193,19 +269,33 @@ export default function LiveTrackingMap({
 
     routePoints.push([finalDropoff.lat, finalDropoff.lng])
 
-    // Draw route polyline
-    const polyline = L.polyline(routePoints, {
-      color: '#2E7D32',
-      weight: 4,
-      opacity: 0.75,
-      dashArray: '8, 8',
-      lineCap: 'round',
-    }).addTo(map)
+    // Draw route polyline — use real road polyline if available, else straight dashed line
+    let polyline
+    const activeRouteCoords =
+      roadPolylinePoints && roadPolylinePoints.length > 0 ? roadPolylinePoints : routePoints
+
+    if (roadPolylinePoints && roadPolylinePoints.length > 0) {
+      polyline = L.polyline(roadPolylinePoints, {
+        color: '#16a34a',
+        weight: 5,
+        opacity: 0.88,
+        lineJoin: 'round',
+        lineCap: 'round',
+      }).addTo(map)
+    } else {
+      polyline = L.polyline(routePoints, {
+        color: '#2E7D32',
+        weight: 4,
+        opacity: 0.75,
+        dashArray: '8, 8',
+        lineCap: 'round',
+      }).addTo(map)
+    }
     markersRef.current.polyline = polyline
 
     // Auto-fit bounds
     try {
-      const bounds = L.latLngBounds(routePoints)
+      const bounds = L.latLngBounds(activeRouteCoords)
       map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 })
     } catch (e) {
       // Fallback
@@ -224,6 +314,7 @@ export default function LiveTrackingMap({
     validVolunteer?.lng,
     status,
     isExpanded,
+    roadPolylinePoints,
   ])
 
   const [geoNotice, setGeoNotice] = useState('')
@@ -377,8 +468,16 @@ export default function LiveTrackingMap({
               : 'Direct Exchange Route'}
           </span>
           {routeInfo.distanceKm && (
-            <span className="text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-100">
-              ~{routeInfo.distanceKm} km · ETA {routeInfo.etaMinutes}m
+            <span className="text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-100 flex items-center gap-1">
+              {isRoadRouted && <RouteIcon className="w-3 h-3 text-emerald-600" />}
+              <span>{isRoadRouted ? `${routeInfo.distanceKm} km` : `~${routeInfo.distanceKm} km`}</span>
+              <span>·</span>
+              <span>ETA {routeInfo.etaMinutes}m</span>
+              {isRoadRouted && (
+                <span className="text-[9px] font-bold text-emerald-900 bg-emerald-200/60 px-1 py-0.2 rounded uppercase">
+                  Road
+                </span>
+              )}
             </span>
           )}
         </div>

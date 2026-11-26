@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import donorService from '../../services/donorService'
 import { FOOD_UNITS } from '../../utils/unitHelper'
+import AddressAutocompleteInput from '../../components/common/AddressAutocompleteInput'
 
 const CATEGORIES = [
   'Cooked Meal',
@@ -49,6 +50,7 @@ export default function AddFood() {
   const [submitProgress, setSubmitProgress] = useState('')
   const [error, setError] = useState('')
   const [savedAddress, setSavedAddress] = useState('')
+  const [savedCoords, setSavedCoords] = useState(null)
   const [coords, setCoords] = useState(null)
 
   // Multi-item state (supports up to 10 items in a single donation batch)
@@ -87,14 +89,19 @@ export default function AddFood() {
     }
   }, [])
 
-  // Load saved profile pickup address
+  // Load saved profile pickup address & coordinates
   useEffect(() => {
     let isMounted = true
     const loadProfile = async () => {
       try {
         const res = await donorService.getProfile()
-        if (isMounted && res.data?.profile?.pickupAddress) {
-          setSavedAddress(res.data.profile.pickupAddress)
+        if (isMounted && res.data?.profile) {
+          if (res.data.profile.pickupAddress) {
+            setSavedAddress(res.data.profile.pickupAddress)
+          }
+          if (res.data.profile.lat != null && res.data.profile.lng != null) {
+            setSavedCoords({ lat: res.data.profile.lat, lng: res.data.profile.lng })
+          }
         }
       } catch (err) {
         console.error('Error fetching donor profile:', err)
@@ -109,6 +116,9 @@ export default function AddFood() {
   const handleUseSavedAddress = () => {
     if (savedAddress) {
       setPickupAddress(savedAddress)
+      if (savedCoords) {
+        setCoords(savedCoords)
+      }
     } else {
       setPickupAddress('742 Evergreen Terrace, San Francisco, CA 94102')
     }
@@ -397,17 +407,19 @@ export default function AddFood() {
                 Use my saved address
               </button>
             </div>
-            <div className="relative">
-              <MapPin className="w-4 h-4 text-gray-400 absolute left-3.5 top-3.5" />
-              <input
-                type="text"
-                required
-                value={pickupAddress}
-                onChange={(e) => setPickupAddress(e.target.value)}
-                placeholder="e.g. 742 Evergreen Terrace, San Francisco, CA"
-                className="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-200 text-sm focus:border-[#2E7D32] outline-hidden bg-white"
-              />
-            </div>
+            <AddressAutocompleteInput
+              value={pickupAddress}
+              onChange={(addr) => setPickupAddress(addr)}
+              onSelectLocation={(loc) => {
+                setPickupAddress(loc.address)
+                if (loc.lat != null && loc.lng != null) {
+                  setCoords({ lat: loc.lat, lng: loc.lng })
+                }
+              }}
+              placeholder="e.g. 742 Evergreen Terrace, San Francisco, CA"
+              currentCoords={coords}
+              required
+            />
           </div>
 
           {/* Pickup Window */}
