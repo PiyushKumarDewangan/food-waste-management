@@ -12,6 +12,7 @@ import { DonorProfile } from '../models/DonorProfile.js'
 import { syncVolunteerRating } from './volunteerController.js'
 import { createDonorNotification } from '../utils/notificationService.js'
 import { autoCancelExpiredDonationsAndExchanges } from '../utils/expiryManager.js'
+import { calculateRoadDistanceKm } from '../utils/googleMapsService.js'
 
 const safeCreateNotification = async (payload) => {
   try {
@@ -427,13 +428,19 @@ export const getReceiverListings = asyncHandler(async (req, res) => {
   const rawListings = await FoodDonation.find(filter).populate('donor', 'fullName organizationName city avatar phone')
 
   // Map & calculate distance in KM + live countdown
-  const listingsWithDistance = rawListings.map((doc) => {
-    const docLat = doc.lat != null && !isNaN(Number(doc.lat)) ? Number(doc.lat) : null
-    const docLng = doc.lng != null && !isNaN(Number(doc.lng)) ? Number(doc.lng) : null
+  const listingsWithDistance = await Promise.all(
+    rawListings.map(async (doc) => {
+      const docLat = doc.lat != null && !isNaN(Number(doc.lat)) ? Number(doc.lat) : null
+      const docLng = doc.lng != null && !isNaN(Number(doc.lng)) ? Number(doc.lng) : null
 
-    // Compute Haversine distance in km
-    const distanceKm = calculateDistanceKm(userLat, userLng, docLat, docLng)
-    const distanceFormatted = formatDistanceKm(distanceKm)
+      // Compute road distance in km (with automatic Haversine fallback)
+      let distanceKm = null
+      if (userLat != null && userLng != null && docLat != null && docLng != null) {
+        distanceKm = await calculateRoadDistanceKm(userLat, userLng, docLat, docLng)
+      } else {
+        distanceKm = calculateDistanceKm(userLat, userLng, docLat, docLng)
+      }
+      const distanceFormatted = formatDistanceKm(distanceKm)
 
     const exp = doc.expiresAt || doc.bestBefore || new Date(Date.now() + 4 * 3600 * 1000)
     const diffMs = exp.getTime() - now.getTime()
@@ -484,7 +491,7 @@ export const getReceiverListings = asyncHandler(async (req, res) => {
       description: doc.description,
       pickupAddress: doc.pickupAddress,
     }
-  })
+  }))
 
   // Distance filter by radius (in km)
   let filtered = listingsWithDistance.filter((item) => !item.isExpired)
@@ -1431,14 +1438,19 @@ export const updateReceiverProfile = asyncHandler(async (req, res) => {
     ...(cleanDropoff && { address: cleanDropoff }),
   })
 
-  // Synchronize any active deliveries so volunteer tracking immediately reflects the new address
-  if (cleanDropoff) {
+  // Synchronize any active deliveries so volunteer tracking immediately reflects the new address & coordinates
+  if (cleanDropoff || (lat != null && lng != null)) {
+    const updateObj = {}
+    if (cleanDropoff) updateObj.dropoffAddress = cleanDropoff
+    if (lat != null && lng != null && !isNaN(Number(lat)) && !isNaN(Number(lng))) {
+      updateObj.dropoffCoords = { lat: Number(lat), lng: Number(lng) }
+    }
     await Exchange.updateMany(
       {
         receiver: userId,
         status: { $in: ['searching_for_volunteer', 'volunteer_assigned', 'picked_up_by_volunteer', 'picked_up', 'out_for_delivery', 'in_transit'] },
       },
-      { $set: { dropoffAddress: cleanDropoff } }
+      { $set: updateObj }
     )
   }
 

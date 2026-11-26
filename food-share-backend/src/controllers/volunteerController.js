@@ -11,6 +11,7 @@ import { Notification } from '../models/Notification.js'
 import { OrderIssue } from '../models/OrderIssue.js'
 import { createDonorNotification } from '../utils/notificationService.js'
 import { autoCancelExpiredDonationsAndExchanges } from '../utils/expiryManager.js'
+import { calculateRoadDistanceKm } from '../utils/googleMapsService.js'
 
 const safeNotify = async (payload) => {
   try {
@@ -342,6 +343,8 @@ export const updateMyVolunteerProfile = asyncHandler(async (req, res) => {
     smartDispatch,
     fullName,
     phone,
+    lat,
+    lng,
   } = req.body
 
   let profile = await VolunteerProfile.findOne({ user: req.user._id })
@@ -380,6 +383,8 @@ export const updateMyVolunteerProfile = asyncHandler(async (req, res) => {
     profile.serviceRadius = `${clampedKm} km`
   }
   if (operatingNeighborhood) profile.operatingNeighborhood = operatingNeighborhood
+  if (lat != null && !isNaN(Number(lat))) profile.lat = Number(lat)
+  if (lng != null && !isNaN(Number(lng))) profile.lng = Number(lng)
   if (emergencyContact !== undefined) profile.emergencyContact = emergencyContact
   if (typeof smartDispatch === 'boolean') profile.smartDispatch = smartDispatch
 
@@ -570,11 +575,12 @@ export const getAvailableDeliveries = asyncHandler(async (req, res) => {
       }
 
       if (!doc.distance && doc.pickupCoords?.lat != null && doc.dropoffCoords?.lat != null) {
-        const km = calculateDistanceKm(
+        const km = await calculateRoadDistanceKm(
           doc.pickupCoords.lat,
           doc.pickupCoords.lng,
           doc.dropoffCoords.lat,
-          doc.dropoffCoords.lng
+          doc.dropoffCoords.lng,
+          profile?.transportType || 'car'
         )
         if (km) doc.distance = `${km} km`
       }
@@ -678,11 +684,12 @@ export const getLatestDispatchRequest = asyncHandler(async (req, res) => {
       }
     }
     if (!doc.distance && doc.pickupCoords?.lat != null && doc.dropoffCoords?.lat != null) {
-      const km = calculateDistanceKm(
+      const km = await calculateRoadDistanceKm(
         doc.pickupCoords.lat,
         doc.pickupCoords.lng,
         doc.dropoffCoords.lat,
-        doc.dropoffCoords.lng
+        doc.dropoffCoords.lng,
+        profile?.transportType || 'car'
       )
       if (km) doc.distance = `${km} km`
     }
@@ -854,11 +861,12 @@ export const getMyDeliveries = asyncHandler(async (req, res) => {
         }
       }
       if (!doc.distance && doc.pickupCoords?.lat != null && doc.dropoffCoords?.lat != null) {
-        const km = calculateDistanceKm(
+        const km = await calculateRoadDistanceKm(
           doc.pickupCoords.lat,
           doc.pickupCoords.lng,
           doc.dropoffCoords.lat,
-          doc.dropoffCoords.lng
+          doc.dropoffCoords.lng,
+          doc.transportType || profile?.transportType || 'car'
         )
         if (km) doc.distance = `${km} km`
       }

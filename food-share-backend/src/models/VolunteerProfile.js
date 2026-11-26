@@ -40,6 +40,8 @@ const volunteerProfileSchema = new mongoose.Schema(
     isOnDuty: { type: Boolean, default: true },
     emergencyContact: { type: String, trim: true, default: '' },
     operatingNeighborhood: { type: String, trim: true, default: '' },
+    lat: { type: Number, default: null },
+    lng: { type: Number, default: null },
     smartDispatch: { type: Boolean, default: true },
 
     // Notification Preferences

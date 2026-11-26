@@ -41,7 +41,7 @@ export const getMyDonorProfile = asyncHandler(async (req, res) => {
 
 // PATCH /api/donors/me — update donor profile fields
 export const updateMyDonorProfile = asyncHandler(async (req, res) => {
-  const { fullName, phone, city, organizationName, donorType, pickupAddress, pickupAvailability, about } = req.body
+  const { fullName, phone, city, organizationName, donorType, pickupAddress, pickupAvailability, about, lat, lng } = req.body
 
   if (fullName || phone || city) {
     await User.findByIdAndUpdate(req.user._id, {
@@ -59,6 +59,8 @@ export const updateMyDonorProfile = asyncHandler(async (req, res) => {
       ...(pickupAddress && { pickupAddress: pickupAddress.trim() }),
       ...(pickupAvailability && { pickupAvailability: pickupAvailability.trim() }),
       ...(about !== undefined && { about }),
+      ...(lat !== undefined && { lat: lat != null ? Number(lat) : null }),
+      ...(lng !== undefined && { lng: lng != null ? Number(lng) : null }),
     },
     { new: true, upsert: true }
   )
@@ -348,8 +350,8 @@ export const createDonation = asyncHandler(async (req, res) => {
     deliveryOptions: ['volunteer', 'direct'],
     status: 'available',
     foodSafetyAccepted: true,
-    ...(req.body.lat != null && !isNaN(Number(req.body.lat)) && { lat: Number(req.body.lat) }),
-    ...(req.body.lng != null && !isNaN(Number(req.body.lng)) && { lng: Number(req.body.lng) }),
+    lat: req.body.lat != null && !isNaN(Number(req.body.lat)) ? Number(req.body.lat) : (donorProfile?.lat ?? null),
+    lng: req.body.lng != null && !isNaN(Number(req.body.lng)) ? Number(req.body.lng) : (donorProfile?.lng ?? null),
   })
 
   await DonorProfile.findOneAndUpdate(
