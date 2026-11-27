@@ -5,10 +5,14 @@ import { Notification } from '../models/Notification.js'
 import { DonorProfile } from '../models/DonorProfile.js'
 import { ReceiverProfile } from '../models/ReceiverProfile.js'
 import { VolunteerProfile } from '../models/VolunteerProfile.js'
+import { syncAdminPlatformNotifications } from './adminController.js'
 
 // GET /api/notifications — list notifications for current authenticated user
 export const getMyNotifications = asyncHandler(async (req, res) => {
   const userId = req.user._id
+  if (req.user.role === 'admin') {
+    await syncAdminPlatformNotifications(userId)
+  }
   const limit = Math.min(Number(req.query.limit) || 30, 100)
 
   const [notifications, unreadCount] = await Promise.all([
@@ -33,6 +37,9 @@ export const getMyNotifications = asyncHandler(async (req, res) => {
 
 // GET /api/notifications/unread-count — quick badge query
 export const getUnreadNotificationCount = asyncHandler(async (req, res) => {
+  if (req.user.role === 'admin') {
+    await syncAdminPlatformNotifications(req.user._id)
+  }
   const count = await Notification.countDocuments({
     user: req.user._id,
     isRead: false,

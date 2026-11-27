@@ -14,6 +14,10 @@ import {
   getAvailableVolunteers,
   assignVolunteerToDelivery,
   getAdminReports,
+  getAdminNotifications,
+  getAdminUnreadNotificationCount,
+  markAdminNotificationAsRead,
+  markAllAdminNotificationsAsRead,
 } from '../controllers/adminController.js'
 import { approveReceiver, rejectReceiver } from '../controllers/receiverController.js'
 import { approveVolunteer, rejectVolunteer } from '../controllers/volunteerController.js'
@@ -54,5 +58,11 @@ router.post('/deliveries/:id/assign-volunteer', assignVolunteerToDelivery)
 
 // 6. Impact Reports & Analytics
 router.get('/reports', getAdminReports)
+
+// 7. Admin Notifications
+router.get('/notifications', getAdminNotifications)
+router.get('/notifications/unread-count', getAdminUnreadNotificationCount)
+router.patch('/notifications/read-all', markAllAdminNotificationsAsRead)
+router.patch('/notifications/:id/read', markAdminNotificationAsRead)
 
 export default router

@@ -1083,3 +1083,248 @@ export const getAdminReports = asyncHandler(async (req, res) => {
     )
   )
 })
+
+// Helper to format relative time strings for notifications
+const formatRelativeTime = (date) => {
+  if (!date) return 'Just now'
+  const diffMs = Date.now() - new Date(date).getTime()
+  const diffMins = Math.floor(diffMs / 60000)
+  if (diffMins < 1) return 'Just now'
+  if (diffMins < 60) return `${diffMins}m ago`
+  const diffHours = Math.floor(diffMins / 60)
+  if (diffHours < 24) return `${diffHours}h ago`
+  const diffDays = Math.floor(diffHours / 24)
+  if (diffDays === 1) return 'Yesterday'
+  if (diffDays < 7) return `${diffDays}d ago`
+  return new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
+/**
+ * Synchronize live operational platform alerts with Notification documents for this admin user
+ */
+export const syncAdminPlatformNotifications = async (adminUserId) => {
+  if (!adminUserId) return
+
+  const now = new Date()
+  const fourHoursLater = new Date(now.getTime() + 4 * 60 * 60 * 1000)
+
+  // 1. Pending Receiver applications
+  const pendingReceivers = await ReceiverProfile.find({ reviewStatus: 'pending' })
+    .populate('user', 'fullName email')
+    .lean()
+  for (const rec of pendingReceivers) {
+    const exists = await Notification.exists({
+      user: adminUserId,
+      relatedId: rec._id,
+      category: 'kyc_verification',
+    })
+    if (!exists) {
+      await safeCreateNotification({
+        user: adminUserId,
+        title: 'New Receiver Verification',
+        message: `${rec.organizationName || rec.user?.fullName || 'Receiver organization'} submitted ${rec.documentType || 'KYC documentation'} for review.`,
+        type: 'verification',
+        category: 'kyc_verification',
+        link: '/admin/verifications',
+        relatedId: rec._id,
+        isRead: false,
+      })
+    }
+  }
+
+  // 2. Pending Volunteer applications
+  const pendingVolunteers = await VolunteerProfile.find({ reviewStatus: 'pending' })
+    .populate('user', 'fullName email')
+    .lean()
+  for (const vol of pendingVolunteers) {
+    const exists = await Notification.exists({
+      user: adminUserId,
+      relatedId: vol._id,
+      category: 'kyc_verification',
+    })
+    if (!exists) {
+      await safeCreateNotification({
+        user: adminUserId,
+        title: 'New Volunteer Application',
+        message: `${vol.user?.fullName || 'Volunteer candidate'} submitted ${vol.documentType || 'identity details'} for approval.`,
+        type: 'verification',
+        category: 'kyc_verification',
+        link: '/admin/verifications',
+        relatedId: vol._id,
+        isRead: false,
+      })
+    }
+  }
+
+  // 3. Expiring food listings (< 4 hours)
+  const expiringFood = await FoodDonation.find({
+    status: 'available',
+    bestBefore: { $lte: fourHoursLater, $gte: new Date(now.getTime() - 2 * 60 * 60 * 1000) },
+  }).lean()
+  for (const food of expiringFood) {
+    const exists = await Notification.exists({
+      user: adminUserId,
+      relatedId: food._id,
+      category: 'food_expiry',
+    })
+    if (!exists) {
+      await safeCreateNotification({
+        user: adminUserId,
+        title: 'Food Listing Expiring Soon',
+        message: `"${food.title}" (${food.quantity} servings) expires soon. Requires prompt pickup dispatch.`,
+        type: 'warning',
+        category: 'food_expiry',
+        link: '/admin/food',
+        relatedId: food._id,
+        isRead: false,
+      })
+    }
+  }
+
+  // 4. Unassigned urgent pickups
+  const unassignedExchanges = await Exchange.find({
+    status: { $in: ['accepted', 'searching_for_volunteer', 'ready_for_pickup'] },
+    volunteer: null,
+  })
+    .populate('foodDonation', 'title')
+    .lean()
+  for (const ex of unassignedExchanges) {
+    const exists = await Notification.exists({
+      user: adminUserId,
+      relatedId: ex._id,
+      category: 'unassigned_pickup',
+    })
+    if (!exists) {
+      await safeCreateNotification({
+        user: adminUserId,
+        title: 'Unassigned Urgent Pickup',
+        message: `Exchange #${ex.exchangeId || String(ex._id).slice(-4).toUpperCase()} for "${ex.foodDonation?.title || 'Food donation'}" needs courier assignment.`,
+        type: 'alert',
+        category: 'unassigned_pickup',
+        link: '/admin/deliveries',
+        relatedId: ex._id,
+        isRead: false,
+      })
+    }
+  }
+
+  // 5. Flagged or disputed deliveries
+  const flaggedExchanges = await Exchange.find({
+    status: { $in: ['disputed', 'delayed', 'cancelled', 'flagged'] },
+  })
+    .populate('foodDonation', 'title')
+    .lean()
+  for (const ex of flaggedExchanges) {
+    const exists = await Notification.exists({
+      user: adminUserId,
+      relatedId: ex._id,
+      category: 'flagged_exchange',
+    })
+    if (!exists) {
+      await safeCreateNotification({
+        user: adminUserId,
+        title: 'Delivery Status Alert',
+        message: `Exchange #${ex.exchangeId || String(ex._id).slice(-4).toUpperCase()} reported status: ${ex.status}. Moderation recommended.`,
+        type: 'alert',
+        category: 'flagged_exchange',
+        link: '/admin/deliveries',
+        relatedId: ex._id,
+        isRead: false,
+      })
+    }
+  }
+}
+
+/**
+ * 7. GET /api/admin/notifications
+ * Retrieves real dynamic notifications for the admin user.
+ */
+export const getAdminNotifications = asyncHandler(async (req, res) => {
+  await syncAdminPlatformNotifications(req.user._id)
+
+  const limit = Math.min(Number(req.query.limit) || 30, 100)
+  const [rawNotifs, unreadCount] = await Promise.all([
+    Notification.find({ user: req.user._id })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean(),
+    Notification.countDocuments({ user: req.user._id, isRead: false }),
+  ])
+
+  const notifications = rawNotifs.map((n) => ({
+    _id: n._id,
+    id: n._id,
+    title: n.title,
+    description: n.message,
+    message: n.message,
+    type: n.type || 'general',
+    category: n.category || 'general',
+    time: formatRelativeTime(n.createdAt),
+    createdAt: n.createdAt,
+    unread: !n.isRead,
+    isRead: n.isRead,
+    link: n.link || '/admin/dashboard',
+  }))
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        notifications,
+        unreadCount,
+        total: notifications.length,
+      },
+      'Admin notifications retrieved successfully.'
+    )
+  )
+})
+
+/**
+ * GET /api/admin/notifications/unread-count
+ */
+export const getAdminUnreadNotificationCount = asyncHandler(async (req, res) => {
+  await syncAdminPlatformNotifications(req.user._id)
+
+  const unreadCount = await Notification.countDocuments({
+    user: req.user._id,
+    isRead: false,
+  })
+
+  return res.status(200).json(
+    new ApiResponse(200, { unreadCount }, 'Unread count fetched.')
+  )
+})
+
+/**
+ * PATCH /api/admin/notifications/:id/read
+ */
+export const markAdminNotificationAsRead = asyncHandler(async (req, res) => {
+  const notif = await Notification.findOneAndUpdate(
+    { _id: req.params.id, user: req.user._id },
+    { $set: { isRead: true } },
+    { new: true }
+  )
+
+  const unreadCount = await Notification.countDocuments({
+    user: req.user._id,
+    isRead: false,
+  })
+
+  return res.status(200).json(
+    new ApiResponse(200, { notification: notif, unreadCount }, 'Notification marked as read.')
+  )
+})
+
+/**
+ * PATCH /api/admin/notifications/read-all
+ */
+export const markAllAdminNotificationsAsRead = asyncHandler(async (req, res) => {
+  await Notification.updateMany(
+    { user: req.user._id, isRead: false },
+    { $set: { isRead: true } }
+  )
+
+  return res.status(200).json(
+    new ApiResponse(200, { unreadCount: 0 }, 'All admin notifications marked as read.')
+  )
+})

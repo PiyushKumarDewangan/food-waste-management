@@ -358,6 +358,45 @@ export const adminService = {
       }
     }
   },
+
+  // 7. Notifications
+  async getNotifications(params = {}) {
+    try {
+      const qs = new URLSearchParams(params).toString()
+      const res = await apiClient.get(`/admin/notifications${qs ? `?${qs}` : ''}`)
+      return res.data?.data || res.data
+    } catch (err) {
+      console.warn('adminService.getNotifications fallback:', err.message)
+      const res = await apiClient.get('/notifications')
+      return res.data?.data || res.data
+    }
+  },
+
+  async getUnreadNotificationCount() {
+    try {
+      const res = await apiClient.get('/admin/notifications/unread-count')
+      return res.data?.data || res.data
+    } catch {
+      const res = await apiClient.get('/notifications/unread-count')
+      return res.data?.data || res.data
+    }
+  },
+
+  async markNotificationAsRead(id) {
+    try {
+      return await apiClient.patch(`/admin/notifications/${id}/read`)
+    } catch {
+      return await apiClient.patch(`/notifications/${id}/read`)
+    }
+  },
+
+  async markAllNotificationsAsRead() {
+    try {
+      return await apiClient.patch('/admin/notifications/read-all')
+    } catch {
+      return await apiClient.patch('/notifications/read-all')
+    }
+  },
 }
 
 export default adminService

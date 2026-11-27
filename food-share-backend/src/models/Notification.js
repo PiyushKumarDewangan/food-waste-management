@@ -20,12 +20,10 @@ const notificationSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ['request', 'order', 'delivery', 'expiry', 'system', 'impact', 'general', 'exchange', 'pickup', 'new_request', 'courier_update', 'exchange_completed'],
       default: 'general',
     },
     category: {
       type: String,
-      enum: ['newFoodRequest', 'volunteerCourierUpdates', 'exchangeCompleted', 'general', 'system', 'other'],
       default: 'general',
       index: true,
     },

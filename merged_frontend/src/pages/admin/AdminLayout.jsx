@@ -28,20 +28,7 @@ export default function AdminLayout() {
   const location = useLocation()
   const [pendingBadge, setPendingBadge] = useState(null)
 
-  useEffect(() => {
-    async function fetchBadge() {
-      try {
-        const dash = await adminService.getDashboard()
-        if (dash?.kpis?.pendingVerifications !== undefined) {
-          setPendingBadge(dash.kpis.pendingVerifications)
-        }
-      } catch (e) {
-        // quiet
-      }
-    }
-    fetchBadge()
-  }, [location.pathname])
-
+  // Navigation Items
   const NAV_ITEMS = [
     {
       name: 'Dashboard',
@@ -76,7 +63,7 @@ export default function AdminLayout() {
     },
   ]
 
-  // Sidebar is collapsed by default (opens on clicking the 3-line hamburger menu)
+  // Sidebar & Dropdown states
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false)
   const [notificationDropdownOpen, setNotificationDropdownOpen] = useState(false)
@@ -87,35 +74,94 @@ export default function AdminLayout() {
   const notificationRef = useRef(null)
   const sidebarRef = useRef(null)
 
-  // Notification items matching real platform alerts
-  const [notifications, setNotifications] = useState([
-    {
-      id: 'notif-1',
-      title: '3 Food Listings Expiring',
-      description: 'Items at Hyatt Regency & Metro Supermarket expire in < 2 hours.',
-      time: '10m ago',
-      unread: true,
-      type: 'warning',
-    },
-    {
-      id: 'notif-2',
-      title: 'New Receiver Application',
-      description: 'Hope Foundation Kitchen submitted 80G Certificate + PAN for verification.',
-      time: '2h ago',
-      unread: true,
-      type: 'verification',
-    },
-    {
-      id: 'notif-3',
-      title: 'Unassigned Urgent Pickup',
-      description: 'Exchange #EX-1043 needs volunteer assignment in Colaba.',
-      time: '3h ago',
-      unread: true,
-      type: 'alert',
-    },
-  ])
+  // Real notifications state
+  const [notifications, setNotifications] = useState([])
+  const [unreadNotifCount, setUnreadNotifCount] = useState(0)
+  const [loadingNotifs, setLoadingNotifs] = useState(false)
 
-  const unreadCount = notifications.filter((n) => n.unread).length
+  const loadUnreadCount = async () => {
+    try {
+      const res = await adminService.getUnreadNotificationCount()
+      setUnreadNotifCount(res?.unreadCount ?? 0)
+    } catch {
+      // quiet
+    }
+  }
+
+  const fetchNotifications = async () => {
+    try {
+      setLoadingNotifs(true)
+      const res = await adminService.getNotifications()
+      const list = res?.notifications || []
+      setNotifications(list)
+      const count = res?.unreadCount ?? list.filter((n) => n.unread || !n.isRead).length
+      setUnreadNotifCount(count)
+    } catch (err) {
+      console.warn('Failed to load admin notifications:', err.message)
+    } finally {
+      setLoadingNotifs(false)
+    }
+  }
+
+  const handleToggleNotifications = () => {
+    const nextState = !notificationDropdownOpen
+    setNotificationDropdownOpen(nextState)
+    if (nextState) {
+      fetchNotifications()
+    }
+  }
+
+  const handleNotificationClick = async (notif) => {
+    if (notif.unread || !notif.isRead) {
+      try {
+        await adminService.markNotificationAsRead(notif._id || notif.id)
+        setNotifications((prev) =>
+          prev.map((n) => (n._id === notif._id || n.id === notif.id ? { ...n, unread: false, isRead: true } : n))
+        )
+        setUnreadNotifCount((prev) => Math.max(0, prev - 1))
+      } catch (err) {
+        console.warn('Failed to mark notification as read:', err.message)
+      }
+    }
+    setNotificationDropdownOpen(false)
+    if (notif.link) {
+      navigate(notif.link)
+    }
+  }
+
+  const markAllNotificationsAsRead = async () => {
+    try {
+      await adminService.markAllNotificationsAsRead()
+      setNotifications((prev) => prev.map((n) => ({ ...n, unread: false, isRead: true })))
+      setUnreadNotifCount(0)
+    } catch (err) {
+      console.warn('Failed to mark all notifications as read:', err.message)
+      setNotifications((prev) => prev.map((n) => ({ ...n, unread: false, isRead: true })))
+      setUnreadNotifCount(0)
+    }
+  }
+
+  useEffect(() => {
+    async function fetchBadge() {
+      try {
+        const dash = await adminService.getDashboard()
+        if (dash?.kpis?.pendingVerifications !== undefined) {
+          setPendingBadge(dash.kpis.pendingVerifications)
+        }
+      } catch (e) {
+        // quiet
+      }
+    }
+    fetchBadge()
+    loadUnreadCount()
+
+    // Poll unread notification count periodically
+    const timer = setInterval(() => {
+      loadUnreadCount()
+    }, 30000)
+
+    return () => clearInterval(timer)
+  }, [location.pathname])
 
   // Close dropdowns and sidebar when clicking outside or pressing Escape
   useEffect(() => {
@@ -171,10 +217,6 @@ export default function AdminLayout() {
     } finally {
       navigate('/login')
     }
-  }
-
-  const markAllNotificationsAsRead = () => {
-    setNotifications((prev) => prev.map((n) => ({ ...n, unread: false })))
   }
 
   // Format current date nicely: "Friday, November 20, 2026"
@@ -338,15 +380,15 @@ export default function AdminLayout() {
             {/* Notification Bell */}
             <div className="relative" ref={notificationRef}>
               <button
-                onClick={() => setNotificationDropdownOpen(!notificationDropdownOpen)}
+                onClick={handleToggleNotifications}
                 className="relative p-2.5 rounded-xl bg-white border border-gray-200 text-gray-600 hover:text-gray-900 hover:border-gray-300 shadow-2xs transition-all cursor-pointer"
                 title="Notifications"
                 aria-label="Notifications"
               >
                 <Bell className="w-4 h-4" />
-                {unreadCount > 0 && (
-                  <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[10px] font-bold rounded-full h-4 min-w-[16px] px-1 flex items-center justify-center border-2 border-white">
-                    {unreadCount}
+                {unreadNotifCount > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[10px] font-bold rounded-full h-4 min-w-[16px] px-1 flex items-center justify-center border-2 border-white animate-in zoom-in-75">
+                    {unreadNotifCount > 9 ? '9+' : unreadNotifCount}
                   </span>
                 )}
               </button>
@@ -357,57 +399,85 @@ export default function AdminLayout() {
                   <div className="flex items-center justify-between px-4 pb-2 border-b border-gray-100">
                     <div className="flex items-center space-x-2">
                       <span className="font-bold text-sm text-[#1F2937]">Notifications</span>
-                      {unreadCount > 0 && (
+                      {unreadNotifCount > 0 && (
                         <span className="bg-red-100 text-red-700 text-xs px-2 py-0.5 rounded-full font-bold">
-                          {unreadCount} new
+                          {unreadNotifCount} new
                         </span>
                       )}
                     </div>
-                    <button
-                      onClick={markAllNotificationsAsRead}
-                      className="text-xs text-[#2E7D32] hover:underline font-semibold flex items-center space-x-1"
-                    >
-                      <CheckCheck className="w-3.5 h-3.5" />
-                      <span>Mark all read</span>
-                    </button>
+                    {unreadNotifCount > 0 && (
+                      <button
+                        onClick={markAllNotificationsAsRead}
+                        className="text-xs text-[#2E7D32] hover:underline font-semibold flex items-center space-x-1 cursor-pointer"
+                      >
+                        <CheckCheck className="w-3.5 h-3.5" />
+                        <span>Mark all read</span>
+                      </button>
+                    )}
                   </div>
 
                   <div className="max-h-72 overflow-y-auto divide-y divide-gray-50">
-                    {notifications.map((notif) => (
-                      <div
-                        key={notif.id}
-                        className={`px-4 py-3 hover:bg-gray-50/80 transition-colors flex items-start space-x-3 ${
-                          notif.unread ? 'bg-emerald-50/30' : ''
-                        }`}
-                      >
-                        <div className="mt-0.5 shrink-0">
-                          {notif.type === 'warning' ? (
-                            <div className="w-7 h-7 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center">
-                              <Clock className="w-4 h-4" />
-                            </div>
-                          ) : notif.type === 'alert' ? (
-                            <div className="w-7 h-7 rounded-full bg-red-100 text-red-700 flex items-center justify-center">
-                              <AlertTriangle className="w-4 h-4" />
-                            </div>
-                          ) : (
-                            <div className="w-7 h-7 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center">
-                              <ShieldCheck className="w-4 h-4" />
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between">
-                            <h4 className="text-xs font-bold text-gray-900 truncate">
-                              {notif.title}
-                            </h4>
-                            <span className="text-[10px] text-gray-400">{notif.time}</span>
-                          </div>
-                          <p className="text-xs text-gray-600 mt-0.5 leading-snug">
-                            {notif.description}
-                          </p>
-                        </div>
+                    {loadingNotifs && notifications.length === 0 ? (
+                      <div className="py-8 text-center text-xs text-gray-400">
+                        Loading notifications...
                       </div>
-                    ))}
+                    ) : notifications.length === 0 ? (
+                      <div className="py-8 px-4 text-center">
+                        <div className="w-9 h-9 rounded-full bg-emerald-50 text-[#2E7D32] flex items-center justify-center mx-auto mb-2">
+                          <Bell className="w-4 h-4 text-[#2E7D32]" />
+                        </div>
+                        <h4 className="text-xs font-bold text-gray-800">All caught up!</h4>
+                        <p className="text-[11px] text-gray-400 mt-0.5 max-w-[240px] mx-auto">
+                          No pending system alerts, expiring listings, or unassigned requests.
+                        </p>
+                      </div>
+                    ) : (
+                      notifications.map((notif) => {
+                        const isUnread = notif.unread || !notif.isRead
+                        return (
+                          <div
+                            key={notif._id || notif.id}
+                            onClick={() => handleNotificationClick(notif)}
+                            className={`px-4 py-3 hover:bg-gray-50/90 transition-colors flex items-start space-x-3 cursor-pointer ${
+                              isUnread ? 'bg-emerald-50/40' : ''
+                            }`}
+                          >
+                            <div className="mt-0.5 shrink-0">
+                              {notif.type === 'warning' ? (
+                                <div className="w-7 h-7 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center">
+                                  <Clock className="w-4 h-4" />
+                                </div>
+                              ) : notif.type === 'alert' || notif.type === 'danger' ? (
+                                <div className="w-7 h-7 rounded-full bg-red-100 text-red-700 flex items-center justify-center">
+                                  <AlertTriangle className="w-4 h-4" />
+                                </div>
+                              ) : (
+                                <div className="w-7 h-7 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center">
+                                  <ShieldCheck className="w-4 h-4" />
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between gap-1">
+                                <h4
+                                  className={`text-xs truncate ${
+                                    isUnread ? 'font-bold text-gray-900' : 'font-semibold text-gray-700'
+                                  }`}
+                                >
+                                  {notif.title}
+                                </h4>
+                                <span className="text-[10px] text-gray-400 shrink-0 ml-1">
+                                  {notif.time}
+                                </span>
+                              </div>
+                              <p className="text-xs text-gray-600 mt-0.5 leading-snug line-clamp-2">
+                                {notif.description || notif.message}
+                              </p>
+                            </div>
+                          </div>
+                        )
+                      })
+                    )}
                   </div>
 
                   <div className="pt-2 px-4 border-t border-gray-100 text-center">
