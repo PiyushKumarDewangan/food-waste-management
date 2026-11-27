@@ -1,3 +1,4 @@
+import mongoose from 'mongoose'
 import { asyncHandler } from '../utils/asyncHandler.js'
 import { ApiResponse } from '../utils/ApiResponse.js'
 import { ApiError } from '../utils/ApiError.js'
@@ -53,13 +54,19 @@ export const listPendingReceivers = asyncHandler(async (req, res) => {
 })
 
 // PATCH /api/receivers/:id/approve — admin-only: approve a receiver's registration
-// :id refers to the ReceiverProfile _id
+// :id refers to the ReceiverProfile _id or User _id
 export const approveReceiver = asyncHandler(async (req, res) => {
-  const profile = await ReceiverProfile.findById(req.params.id)
+  let profile = await ReceiverProfile.findById(req.params.id)
+  if (!profile && mongoose.Types.ObjectId.isValid(req.params.id)) {
+    profile = await ReceiverProfile.findOne({ user: req.params.id })
+  }
   if (!profile) throw new ApiError(404, 'Receiver profile not found.')
 
   if (profile.reviewStatus === 'approved') {
-    throw new ApiError(409, 'This receiver has already been approved.')
+    const user = profile.user ? await User.findById(profile.user) : null
+    return res
+      .status(200)
+      .json(new ApiResponse(200, { profile, user: user?.toSafeObject ? user.toSafeObject() : user }, 'Receiver is already approved.'))
   }
 
   profile.reviewStatus = 'approved'
@@ -68,39 +75,38 @@ export const approveReceiver = asyncHandler(async (req, res) => {
   profile.rejectionReason = null
   await profile.save()
 
-  const user = await User.findByIdAndUpdate(profile.user, { status: 'active' }, { new: true })
-
-  // TODO: send an approval email/notification to user.email once an email
-  // service is wired up (see authController.forgotPassword TODO for the
-  // same dependency).
+  const user = profile.user ? await User.findByIdAndUpdate(profile.user, { status: 'active' }, { new: true }) : null
 
   return res
     .status(200)
-    .json(new ApiResponse(200, { profile, user: user?.toSafeObject() }, 'Receiver approved successfully.'))
+    .json(new ApiResponse(200, { profile, user: user?.toSafeObject ? user.toSafeObject() : user }, 'Receiver approved successfully.'))
 })
 
 // PATCH /api/receivers/:id/reject — admin-only: reject a receiver's registration
 // Body: { reason?: string }
 export const rejectReceiver = asyncHandler(async (req, res) => {
-  const profile = await ReceiverProfile.findById(req.params.id)
+  let profile = await ReceiverProfile.findById(req.params.id)
+  if (!profile && mongoose.Types.ObjectId.isValid(req.params.id)) {
+    profile = await ReceiverProfile.findOne({ user: req.params.id })
+  }
   if (!profile) throw new ApiError(404, 'Receiver profile not found.')
 
   if (profile.reviewStatus === 'rejected') {
-    throw new ApiError(409, 'This receiver has already been rejected.')
+    const user = profile.user ? await User.findById(profile.user) : null
+    return res
+      .status(200)
+      .json(new ApiResponse(200, { profile, user: user?.toSafeObject ? user.toSafeObject() : user }, 'Receiver is already rejected.'))
   }
 
   profile.reviewStatus = 'rejected'
   profile.reviewedBy = req.user._id
   profile.reviewedAt = new Date()
-  profile.rejectionReason = req.body.reason || 'Did not meet verification requirements.'
+  profile.rejectionReason = req.body?.reason || 'Did not meet verification requirements.'
   await profile.save()
 
-  const user = await User.findByIdAndUpdate(profile.user, { status: 'rejected' }, { new: true })
-
-  // TODO: send a rejection email/notification (include profile.rejectionReason)
-  // once an email service is wired up.
+  const user = profile.user ? await User.findByIdAndUpdate(profile.user, { status: 'rejected' }, { new: true }) : null
 
   return res
     .status(200)
-    .json(new ApiResponse(200, { profile, user: user?.toSafeObject() }, 'Receiver rejected.'))
+    .json(new ApiResponse(200, { profile, user: user?.toSafeObject ? user.toSafeObject() : user }, 'Receiver rejected.'))
 })
