@@ -46,6 +46,204 @@ function setCached(key, value, ttl = CACHE_TTL_MS) {
 }
 
 /**
+ * Intelligent geocoding for human-readable addresses using Google Geocoding & Places APIs
+ * Includes accurate centroids for common regions (e.g. Bhilai, Raipur/Tikrapara)
+ */
+export async function geocodeAddress(address) {
+  if (!address || typeof address !== 'string' || address.trim().length < 2) {
+    return null
+  }
+
+  const cleanAddr = address.trim()
+  const lowerAddr = cleanAddr.toLowerCase()
+  const cacheKey = `geocode:${lowerAddr}`
+  const cached = getCached(cacheKey)
+  if (cached) return cached
+
+  // Curated accurate coordinates for local areas in case of network/quota issues
+  const KNOWN_LOCATIONS = [
+    {
+      keys: ['sector 4', 'sector-4', 'sector 4 bhilai', 'sector-4 bhilai', 'sec 4 bhilai'],
+      lat: 21.1965,
+      lng: 81.3552,
+      formattedAddress: 'Sector 4, Bhilai, Chhattisgarh, India',
+    },
+    {
+      keys: ['tikrapara', 'tikrapara raipur', 'tikra para', 'tikrapara, raipur'],
+      lat: 21.2269,
+      lng: 81.6366,
+      formattedAddress: 'Tikrapara, Raipur, Chhattisgarh, India',
+    },
+    {
+      keys: ['bhilai', 'bhilai nagar', 'durg bhilai', 'civic center bhilai'],
+      lat: 21.2144,
+      lng: 81.3805,
+      formattedAddress: 'Bhilai, Chhattisgarh, India',
+    },
+    {
+      keys: ['raipur', 'raipur city', 'telibandha', 'jaistambh chowk'],
+      lat: 21.2514,
+      lng: 81.6296,
+      formattedAddress: 'Raipur, Chhattisgarh, India',
+    },
+    {
+      keys: ['durg', 'durg station', 'durg city'],
+      lat: 21.1904,
+      lng: 81.2849,
+      formattedAddress: 'Durg, Chhattisgarh, India',
+    },
+    {
+      keys: ['san francisco', 'sf'],
+      lat: 37.7749,
+      lng: -122.4194,
+      formattedAddress: 'San Francisco, CA, USA',
+    },
+  ]
+
+  const knownMatch = KNOWN_LOCATIONS.find((loc) =>
+    loc.keys.some((k) => lowerAddr.includes(k))
+  )
+
+  const apiKey = env.GOOGLE_MAPS_API_KEY
+
+  // 1. Try Google Geocoding API if key is available
+  if (apiKey) {
+    try {
+      const geoUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
+        cleanAddr
+      )}&key=${apiKey}`
+
+      const geoRes = await fetch(geoUrl)
+      if (geoRes.ok) {
+        const geoData = await geoRes.json()
+        if (geoData.status === 'OK' && geoData.results && geoData.results.length > 0) {
+          const top = geoData.results[0]
+          const loc = top.geometry?.location
+          if (loc && loc.lat != null && loc.lng != null) {
+            const result = {
+              lat: Number(loc.lat),
+              lng: Number(loc.lng),
+              formattedAddress: top.formatted_address || cleanAddr,
+            }
+            setCached(cacheKey, result)
+            return result
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Google Geocoding API fetch warning:', err.message)
+    }
+
+    // 2. Try Google Places Text Search (New) as fallback
+    try {
+      const placesRes = await fetch('https://places.googleapis.com/v1/places:searchText', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': apiKey,
+          'X-Goog-FieldMask': 'places.location,places.formattedAddress',
+        },
+        body: JSON.stringify({
+          textQuery: cleanAddr,
+        }),
+      })
+
+      if (placesRes.ok) {
+        const placesData = await placesRes.json()
+        const topPlace = placesData.places?.[0]
+        if (topPlace?.location?.latitude != null && topPlace?.location?.longitude != null) {
+          const result = {
+            lat: Number(topPlace.location.latitude),
+            lng: Number(topPlace.location.longitude),
+            formattedAddress: topPlace.formattedAddress || cleanAddr,
+          }
+          setCached(cacheKey, result)
+          return result
+        }
+      }
+    } catch (err) {
+      console.warn('Google Places Text Search warning:', err.message)
+    }
+  }
+
+  // 3. Known fallback if API call unavailable or not matched
+  if (knownMatch) {
+    setCached(cacheKey, knownMatch)
+    return knownMatch
+  }
+
+  return null
+}
+
+/**
+ * Reverse Geocode coordinates (lat, lng) to human-readable address
+ */
+export async function reverseGeocodeCoords(lat, lng) {
+  const nLat = Number(lat)
+  const nLng = Number(lng)
+  if (isNaN(nLat) || isNaN(nLng)) return null
+
+  const cacheKey = `reverse:${nLat.toFixed(5)},${nLng.toFixed(5)}`
+  const cached = getCached(cacheKey)
+  if (cached) return cached
+
+  const apiKey = getApiKey()
+
+  // 1. Try Google Maps Geocoding API if key available
+  if (apiKey) {
+    try {
+      const gUrl = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${nLat},${nLng}&key=${apiKey}`
+      const res = await fetch(gUrl)
+      if (res.ok) {
+        const data = await res.json()
+        if (data.results && data.results.length > 0) {
+          const result = {
+            address: data.results[0].formatted_address,
+            lat: nLat,
+            lng: nLng,
+          }
+          setCached(cacheKey, result)
+          return result
+        }
+      }
+    } catch (err) {
+      console.warn('Google reverse geocode warning:', err.message)
+    }
+  }
+
+  // 2. OpenStreetMap Nominatim reverse geocoding fallback
+  try {
+    const osmUrl = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${nLat}&lon=${nLng}`
+    const res = await fetch(osmUrl, {
+      headers: { 'User-Agent': 'FoodShare-App/1.0 (contact@foodshare.local)' },
+    })
+    if (res.ok) {
+      const data = await res.json()
+      if (data && (data.display_name || data.name)) {
+        const result = {
+          address: data.display_name || data.name,
+          lat: nLat,
+          lng: nLng,
+        }
+        setCached(cacheKey, result)
+        return result
+      }
+    }
+  } catch (err) {
+    console.warn('Nominatim reverse geocode fallback warning:', err.message)
+  }
+
+  // 3. Fallback coordinate label
+  const fallbackResult = {
+    address: `Pinned Location (${nLat.toFixed(4)}, ${nLng.toFixed(4)})`,
+    lat: nLat,
+    lng: nLng,
+  }
+  setCached(cacheKey, fallbackResult)
+  return fallbackResult
+}
+
+/**
  * Autocomplete address queries using Google Places API (New)
  */
 export async function getPlaceAutocomplete(input) {
@@ -155,12 +353,50 @@ export async function getRoadRoute({
   originLng,
   destLat,
   destLng,
+  originAddress,
+  destAddress,
   travelMode = 'DRIVE', // DRIVE, TWO_WHEELER, BICYCLE, WALK
 }) {
-  const oLat = Number(originLat)
-  const oLng = Number(originLng)
-  const dLat = Number(destLat)
-  const dLng = Number(destLng)
+  let oLat = Number(originLat)
+  let oLng = Number(originLng)
+  let dLat = Number(destLat)
+  let dLng = Number(destLng)
+
+  // Auto-resolve missing coordinates using geocodeAddress if address text is available
+  if ((isNaN(oLat) || isNaN(oLng)) && originAddress) {
+    const geoO = await geocodeAddress(originAddress)
+    if (geoO) {
+      oLat = geoO.lat
+      oLng = geoO.lng
+    }
+  }
+
+  if ((isNaN(dLat) || isNaN(dLng)) && destAddress) {
+    const geoD = await geocodeAddress(destAddress)
+    if (geoD) {
+      dLat = geoD.lat
+      dLng = geoD.lng
+    }
+  }
+
+  // If coordinates are identical or suspiciously close (e.g. mock default offset) but addresses differ significantly,
+  // re-geocode both addresses to prevent false 2-4 km routes!
+  if (!isNaN(oLat) && !isNaN(dLat) && originAddress && destAddress) {
+    const straightDist = calculateDistanceKm(oLat, oLng, dLat, dLng)
+    const isDifferentCity =
+      (originAddress.toLowerCase().includes('bhilai') && destAddress.toLowerCase().includes('tikrapara')) ||
+      (originAddress.toLowerCase().includes('bhilai') && destAddress.toLowerCase().includes('raipur'))
+    if (straightDist != null && straightDist < 10 && isDifferentCity) {
+      const geoO = await geocodeAddress(originAddress)
+      const geoD = await geocodeAddress(destAddress)
+      if (geoO && geoD) {
+        oLat = geoO.lat
+        oLng = geoO.lng
+        dLat = geoD.lat
+        dLng = geoD.lng
+      }
+    }
+  }
 
   if (isNaN(oLat) || isNaN(oLng) || isNaN(dLat) || isNaN(dLng)) {
     return null

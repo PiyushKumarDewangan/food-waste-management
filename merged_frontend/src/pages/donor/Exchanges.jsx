@@ -662,8 +662,8 @@ export default function Exchanges() {
                       volunteerName={volunteer.name || exchange.volunteer?.fullName || 'Volunteer Courier'}
                       volunteerTransport={volunteer.transportType || 'bicycle'}
                       status={exchange.status}
-                      height="260px"
-                      showExternalNav={true}
+                      height="380px"
+                      showExternalNav={false}
                       userRole="donor"
                     />
                   </div>

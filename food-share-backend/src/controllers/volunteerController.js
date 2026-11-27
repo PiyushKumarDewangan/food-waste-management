@@ -11,7 +11,7 @@ import { Notification } from '../models/Notification.js'
 import { OrderIssue } from '../models/OrderIssue.js'
 import { createDonorNotification } from '../utils/notificationService.js'
 import { autoCancelExpiredDonationsAndExchanges } from '../utils/expiryManager.js'
-import { calculateRoadDistanceKm } from '../utils/googleMapsService.js'
+import { calculateRoadDistanceKm, geocodeAddress } from '../utils/googleMapsService.js'
 
 const safeNotify = async (payload) => {
   try {
@@ -735,6 +735,7 @@ export const getMyDeliveries = asyncHandler(async (req, res) => {
 
   const userVolId = req.user._id
   const userName = req.user.fullName
+  const volunteerProfile = await VolunteerProfile.findOne({ user: userVolId }).lean()
 
   // Auto-link any cancelled exchanges that this volunteer accepted or reported on
   if (userName) {
@@ -860,15 +861,40 @@ export const getMyDeliveries = asyncHandler(async (req, res) => {
           }
         }
       }
+      // Auto-resolve missing coordinates dynamically
+      if ((!doc.pickupCoords || doc.pickupCoords.lat == null) && doc.pickupAddress) {
+        const geoP = await geocodeAddress(doc.pickupAddress)
+        if (geoP) doc.pickupCoords = { lat: geoP.lat, lng: geoP.lng }
+      }
+      if ((!doc.dropoffCoords || doc.dropoffCoords.lat == null) && doc.dropoffAddress) {
+        const geoD = await geocodeAddress(doc.dropoffAddress)
+        if (geoD) doc.dropoffCoords = { lat: geoD.lat, lng: geoD.lng }
+      }
+
       if (!doc.distance && doc.pickupCoords?.lat != null && doc.dropoffCoords?.lat != null) {
-        const km = await calculateRoadDistanceKm(
-          doc.pickupCoords.lat,
-          doc.pickupCoords.lng,
-          doc.dropoffCoords.lat,
-          doc.dropoffCoords.lng,
-          doc.transportType || profile?.transportType || 'car'
-        )
-        if (km) doc.distance = `${km} km`
+        const taskTransport =
+          doc.transportType ||
+          doc.volunteerInfo?.transportType ||
+          volunteerProfile?.transportType ||
+          'car'
+        try {
+          const km = await calculateRoadDistanceKm(
+            doc.pickupCoords.lat,
+            doc.pickupCoords.lng,
+            doc.dropoffCoords.lat,
+            doc.dropoffCoords.lng,
+            taskTransport
+          )
+          if (km) doc.distance = `${km} km`
+        } catch {
+          const hDist = calculateDistanceKm(
+            doc.pickupCoords.lat,
+            doc.pickupCoords.lng,
+            doc.dropoffCoords.lat,
+            doc.dropoffCoords.lng
+          )
+          if (hDist) doc.distance = `${hDist} km`
+        }
       }
       return doc
     })
@@ -896,6 +922,20 @@ export const acceptDelivery = asyncHandler(async (req, res) => {
   const taskTransport = req.body?.transportType || profile?.transportType || 'bicycle'
   const taskVehicleNumber = req.body?.vehicleNumber || (taskTransport === profile?.transportType ? profile?.vehicleNumber : '') || ''
 
+  // Resolve initial volunteer dispatch coordinates (live GPS > profile base location > geocoded base neighborhood)
+  let volLat = req.body?.lat != null && !isNaN(Number(req.body.lat)) ? Number(req.body.lat) : (profile?.lat ?? null)
+  let volLng = req.body?.lng != null && !isNaN(Number(req.body.lng)) ? Number(req.body.lng) : (profile?.lng ?? null)
+
+  if ((volLat == null || volLng == null) && profile?.operatingNeighborhood) {
+    const geoVol = await geocodeAddress(profile.operatingNeighborhood)
+    if (geoVol) {
+      volLat = geoVol.lat
+      volLng = geoVol.lng
+    }
+  }
+
+  const volunteerCoordsPayload = (volLat != null && volLng != null) ? { lat: volLat, lng: volLng } : null
+
   // Atomic findOneAndUpdate ensures strict concurrency control against race conditions
   const updatedExchange = await Exchange.findOneAndUpdate(
     {
@@ -917,6 +957,7 @@ export const acceptDelivery = asyncHandler(async (req, res) => {
           deliveriesCompleted: profile?.totalDeliveriesCompleted || 0,
         },
         courierPhone: req.user.phone || '',
+        volunteerCoords: volunteerCoordsPayload,
         volunteerStatus: 'assigned',
         status: 'volunteer_assigned',
         stage: 2,

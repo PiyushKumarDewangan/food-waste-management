@@ -214,12 +214,17 @@ export default function VolunteerDeliveries() {
     }
   }
 
-  // Claim Available Task from Pool (Supports task-specific vehicle selection)
+  // Claim Available Task from Pool (Supports task-specific vehicle selection & live location)
   const handleAcceptTask = async (deliveryId, transportType = 'bicycle') => {
     try {
       setClaimLoadingId(deliveryId)
       setErrorMessage('')
-      await volunteerService.acceptDelivery(deliveryId, { transportType })
+      const acceptPayload = { transportType }
+      if (volunteerLiveCoords?.lat != null && volunteerLiveCoords?.lng != null) {
+        acceptPayload.lat = volunteerLiveCoords.lat
+        acceptPayload.lng = volunteerLiveCoords.lng
+      }
+      await volunteerService.acceptDelivery(deliveryId, acceptPayload)
       setSuccessMessage(
         `Task claimed with ${transportType.charAt(0).toUpperCase() + transportType.slice(1)}! Please proceed to pickup.`
       )
@@ -517,8 +522,13 @@ export default function VolunteerDeliveries() {
                   </div>
                 </div>
 
-                {/* Upper Route Button: Opens overall exchange route from Donor to Receiver */}
+                {/* Upper Route Button: Opens overall exchange route from Donor to Receiver using EXACT GPS coordinates */}
                 {(() => {
+                  const pLat = currentRun.pickupCoords?.lat ?? currentRun.donation?.lat
+                  const pLng = currentRun.pickupCoords?.lng ?? currentRun.donation?.lng
+                  const dLat = currentRun.dropoffCoords?.lat
+                  const dLng = currentRun.dropoffCoords?.lng
+
                   const donorAddress =
                     currentRun.pickupAddress ||
                     currentRun.donation?.pickupAddress ||
@@ -528,6 +538,15 @@ export default function VolunteerDeliveries() {
                     currentRun.dropoffAddress ||
                     currentRun.receiver?.address ||
                     ''
+
+                  const originParam = (pLat != null && pLng != null)
+                    ? `${pLat},${pLng}`
+                    : encodeURIComponent(donorAddress || 'Sector 4 Bhilai')
+
+                  const destParam = (dLat != null && dLng != null)
+                    ? `${dLat},${dLng}`
+                    : encodeURIComponent(receiverAddress || 'Tikrapara Raipur')
+
                   const activeTransport = currentRun.volunteerInfo?.transportType || 'bicycle'
                   const travelMode =
                     activeTransport === 'walking'
@@ -537,9 +556,8 @@ export default function VolunteerDeliveries() {
                       : activeTransport === 'motorcycle'
                       ? 'two_wheeler'
                       : 'driving'
-                  const routeUrl = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(
-                    donorAddress
-                  )}&destination=${encodeURIComponent(receiverAddress)}&travelmode=${travelMode}`
+
+                  const routeUrl = `https://www.google.com/maps/dir/?api=1&origin=${originParam}&destination=${destParam}&travelmode=${travelMode}`
 
                   return (
                     <a
@@ -547,7 +565,7 @@ export default function VolunteerDeliveries() {
                       target="_blank"
                       rel="noreferrer"
                       className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-xs font-bold text-gray-700 transition-colors shadow-2xs self-start sm:self-auto cursor-pointer"
-                      title="Open full exchange route from Donor to Receiver"
+                      title="Open full exchange route from exact Donor coordinates to exact Receiver coordinates"
                     >
                       <ExternalLink className="w-3.5 h-3.5 text-gray-400" />
                       <span>Open Route</span>
@@ -578,7 +596,7 @@ export default function VolunteerDeliveries() {
                   volunteerName={currentRun.volunteerInfo?.name || 'Volunteer Courier'}
                   volunteerTransport={currentRun.volunteerInfo?.transportType || 'bicycle'}
                   status={currentRun.status}
-                  height="340px"
+                  height="380px"
                   showExternalNav={true}
                   userRole="volunteer"
                 />

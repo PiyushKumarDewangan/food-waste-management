@@ -600,14 +600,16 @@ export default function VolunteerDashboard() {
               </div>
 
               <a
-                href={`https://www.google.com/maps/dir/?api=1&destination=${
+                href={`https://www.google.com/maps/dir/?api=1&origin=Current+Location&destination=${
                   isEnRouteOrDropoff
-                    ? activeDelivery.dropoffCoords?.lat
+                    ? (activeDelivery.dropoffCoords?.lat != null && activeDelivery.dropoffCoords?.lng != null)
                       ? `${activeDelivery.dropoffCoords.lat},${activeDelivery.dropoffCoords.lng}`
-                      : encodeURIComponent(activeDelivery.dropoffAddress || activeDelivery.receiver?.address || 'Indore')
-                    : activeDelivery.pickupCoords?.lat
+                      : encodeURIComponent(activeDelivery.dropoffAddress || activeDelivery.receiver?.address || 'Tikrapara Raipur')
+                    : (activeDelivery.pickupCoords?.lat != null && activeDelivery.pickupCoords?.lng != null)
                     ? `${activeDelivery.pickupCoords.lat},${activeDelivery.pickupCoords.lng}`
-                    : encodeURIComponent(activeDelivery.pickupAddress || activeDelivery.donation?.pickupAddress || activeDelivery.donor?.address || 'Indore')
+                    : (activeDelivery.donation?.lat != null && activeDelivery.donation?.lng != null)
+                    ? `${activeDelivery.donation.lat},${activeDelivery.donation.lng}`
+                    : encodeURIComponent(activeDelivery.pickupAddress || activeDelivery.donation?.pickupAddress || activeDelivery.donor?.address || 'Sector 4 Bhilai')
                 }`}
                 target="_blank"
                 rel="noreferrer"

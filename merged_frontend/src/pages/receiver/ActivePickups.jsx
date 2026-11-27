@@ -566,8 +566,8 @@ function PickupCard({
             volunteerName={pickup.courier?.name || 'Volunteer Courier'}
             volunteerTransport={pickup.courier?.transport || 'bicycle'}
             status={pickup.status}
-            height="260px"
-            showExternalNav={true}
+            height="380px"
+            showExternalNav={!isVolunteer}
             userRole="receiver"
           />
         </div>

@@ -12,7 +12,7 @@ import { DonorProfile } from '../models/DonorProfile.js'
 import { syncVolunteerRating } from './volunteerController.js'
 import { createDonorNotification } from '../utils/notificationService.js'
 import { autoCancelExpiredDonationsAndExchanges } from '../utils/expiryManager.js'
-import { calculateRoadDistanceKm } from '../utils/googleMapsService.js'
+import { calculateRoadDistanceKm, geocodeAddress } from '../utils/googleMapsService.js'
 
 const safeCreateNotification = async (payload) => {
   try {
@@ -844,9 +844,36 @@ export const getReceiverPickups = asyncHandler(async (req, res) => {
     }),
   ])
 
-  const formatted = exchanges.map((ex) => {
-    const isDirect = ex.deliveryType === 'direct_pickup'
-    const isVolunteerCourier = ex.deliveryType === 'volunteer_delivery'
+  const formatted = await Promise.all(
+    exchanges.map(async (ex) => {
+      const isDirect = ex.deliveryType === 'direct_pickup'
+      const isVolunteerCourier = ex.deliveryType === 'volunteer_delivery'
+
+      let changed = false
+      let finalPickupCoords = ex.pickupCoords?.lat != null ? ex.pickupCoords : (ex.donation?.lat ? { lat: ex.donation.lat, lng: ex.donation.lng } : null)
+      let finalDropoffCoords = ex.dropoffCoords?.lat != null ? ex.dropoffCoords : null
+
+      if ((!finalPickupCoords || finalPickupCoords.lat == null) && ex.pickupAddress) {
+        const geoP = await geocodeAddress(ex.pickupAddress)
+        if (geoP) {
+          finalPickupCoords = { lat: geoP.lat, lng: geoP.lng }
+          ex.pickupCoords = finalPickupCoords
+          changed = true
+        }
+      }
+
+      if ((!finalDropoffCoords || finalDropoffCoords.lat == null) && ex.dropoffAddress) {
+        const geoD = await geocodeAddress(ex.dropoffAddress)
+        if (geoD) {
+          finalDropoffCoords = { lat: geoD.lat, lng: geoD.lng }
+          ex.dropoffCoords = finalDropoffCoords
+          changed = true
+        }
+      }
+
+      if (changed) {
+        await ex.save().catch(() => {})
+      }
 
     // Extract last cancellation note if cancelled
     const lastCancelledTimeline = ex.status === 'cancelled'
@@ -899,8 +926,8 @@ export const getReceiverPickups = asyncHandler(async (req, res) => {
       volunteerStatus: ex.volunteerStatus,
       pickupAddress: ex.pickupAddress || 'Donor Address',
       dropoffAddress: ex.dropoffAddress || '',
-      pickupCoords: ex.pickupCoords || (ex.donation?.lat ? { lat: ex.donation.lat, lng: ex.donation.lng } : null),
-      dropoffCoords: ex.dropoffCoords || null,
+      pickupCoords: finalPickupCoords,
+      dropoffCoords: finalDropoffCoords,
       volunteerCoords: ex.volunteerCoords || null,
       pickupWindow: ex.pickupWindow || 'Standard Window',
       handoverCode: codeForReceiver,
@@ -920,7 +947,7 @@ export const getReceiverPickups = asyncHandler(async (req, res) => {
       volunteerReviewStatus: (ex.receiverToVolunteerFeedback?.rating || ex.receiverFeedback?.rating) ? 'submitted' : 'pending',
       deliveredAt: ex.deliveredAt,
     }
-  })
+  }))
 
   // Sort with most recent at top and older ones at bottom
   formatted.sort((a, b) => {

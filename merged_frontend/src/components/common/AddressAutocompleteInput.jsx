@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { MapPin, Search, Loader2, X, CheckCircle2, Crosshair } from 'lucide-react'
 import { getAddressSuggestions, getPlaceLocation } from '../../services/mapsService'
+import LocationPickerModal from './LocationPickerModal'
 
 export default function AddressAutocompleteInput({
   value = '',
@@ -14,6 +15,7 @@ export default function AddressAutocompleteInput({
   className = '',
   currentCoords = null,
   showLocateMe = true,
+  showPinButton = true,
 }) {
   const [inputValue, setInputValue] = useState(value || '')
   const [suggestions, setSuggestions] = useState([])
@@ -21,6 +23,7 @@ export default function AddressAutocompleteInput({
   const [loading, setLoading] = useState(false)
   const [activeIdx, setActiveIdx] = useState(-1)
   const [locating, setLocating] = useState(false)
+  const [isPinModalOpen, setIsPinModalOpen] = useState(false)
   const [hasVerifiedCoords, setHasVerifiedCoords] = useState(
     currentCoords?.lat != null && currentCoords?.lng != null
   )
@@ -191,6 +194,20 @@ export default function AddressAutocompleteInput({
     }
   }
 
+  const handleConfirmPinLocation = ({ address, lat, lng }) => {
+    setInputValue(address)
+    setHasVerifiedCoords(true)
+    if (onChange) onChange(address)
+    if (onSelectLocation) {
+      onSelectLocation({
+        address,
+        lat,
+        lng,
+        isPinDrop: true,
+      })
+    }
+  }
+
   return (
     <div ref={containerRef} className={`relative flex flex-col gap-1.5 ${className}`}>
       {label && (
@@ -223,7 +240,7 @@ export default function AddressAutocompleteInput({
           placeholder={placeholder}
           disabled={disabled}
           required={required}
-          className={`w-full pl-9 pr-20 py-2.5 text-sm rounded-xl border transition-all duration-200 outline-none ${
+          className={`w-full pl-9 pr-24 py-2.5 text-sm rounded-xl border transition-all duration-200 outline-none ${
             error
               ? 'border-red-400 bg-red-50/20 focus:border-red-500 focus:ring-2 focus:ring-red-200'
               : 'border-slate-200 bg-white focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 hover:border-slate-300'
@@ -237,7 +254,7 @@ export default function AddressAutocompleteInput({
             <button
               type="button"
               onClick={handleClear}
-              className="p-1 rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+              className="p-1 rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
               title="Clear address"
             >
               <X className="w-3.5 h-3.5" />
@@ -249,7 +266,7 @@ export default function AddressAutocompleteInput({
               type="button"
               onClick={handleLocateMe}
               disabled={locating}
-              className="p-1.5 rounded-lg text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 border border-slate-200 hover:border-emerald-200 transition-all title='Use current GPS location'"
+              className="p-1.5 rounded-lg text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 border border-slate-200 hover:border-emerald-200 transition-all cursor-pointer"
               title="Locate me using GPS"
             >
               {locating ? (
@@ -259,8 +276,36 @@ export default function AddressAutocompleteInput({
               )}
             </button>
           )}
+
+          {showPinButton && !disabled && (
+            <button
+              type="button"
+              onClick={() => setIsPinModalOpen(true)}
+              className="p-1.5 rounded-lg text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition-all cursor-pointer flex items-center gap-1 shadow-2xs"
+              title="Drop exact pin on interactive map"
+            >
+              <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+            </button>
+          )}
         </div>
       </div>
+
+      {showPinButton && !disabled && (
+        <div className="flex items-center justify-between text-[11px] px-1">
+          <button
+            type="button"
+            onClick={() => setIsPinModalOpen(true)}
+            className="inline-flex items-center gap-1 text-emerald-700 hover:text-emerald-800 font-semibold cursor-pointer transition-colors"
+          >
+            <span>📍 Select exact location by dropping a pin on the map</span>
+          </button>
+          {hasVerifiedCoords && currentCoords?.lat != null && (
+            <span className="text-slate-400 font-mono text-[10px] hidden sm:inline">
+              ({Number(currentCoords.lat).toFixed(4)}, {Number(currentCoords.lng).toFixed(4)})
+            </span>
+          )}
+        </div>
+      )}
 
       {error && <p className="text-xs text-red-500 mt-0.5">{error}</p>}
 
@@ -298,6 +343,16 @@ export default function AddressAutocompleteInput({
           })}
         </ul>
       )}
+
+      {/* Interactive Pin-Drop Modal */}
+      <LocationPickerModal
+        isOpen={isPinModalOpen}
+        onClose={() => setIsPinModalOpen(false)}
+        initialCoords={currentCoords}
+        initialAddress={inputValue}
+        onConfirm={handleConfirmPinLocation}
+        title={label ? `Pin Location for ${label}` : 'Pin Exact Location on Map'}
+      />
     </div>
   )
 }

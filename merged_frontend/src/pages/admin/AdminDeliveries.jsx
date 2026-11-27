@@ -281,6 +281,7 @@ export default function AdminDeliveries() {
               volunteerName={liveTrackExchange?.volunteer?.name || 'Rahul Verma'}
               status="in_transit"
               height="450px"
+              showExternalNav={false}
               userRole="admin"
             />
           </div>

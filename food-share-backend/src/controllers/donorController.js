@@ -12,6 +12,7 @@ import { ReceiverProfile } from '../models/ReceiverProfile.js'
 import { Notification } from '../models/Notification.js'
 import { syncVolunteerRating } from './volunteerController.js'
 import { autoCancelExpiredDonationsAndExchanges } from '../utils/expiryManager.js'
+import { geocodeAddress } from '../utils/googleMapsService.js'
 
 const safeCreateNotification = async (payload) => {
   try {
@@ -657,6 +658,26 @@ export const respondToRequest = asyncHandler(async (req, res) => {
     volunteerCoords: null,
   }
 
+  // Ensure coordinates are geocoded if missing from profile or donation
+  if (exchangeData.pickupCoords.lat == null && exchangeData.pickupAddress) {
+    const geoP = await geocodeAddress(exchangeData.pickupAddress)
+    if (geoP) {
+      exchangeData.pickupCoords = { lat: geoP.lat, lng: geoP.lng }
+    }
+  }
+
+  if (exchangeData.dropoffCoords.lat == null && exchangeData.dropoffAddress) {
+    const geoD = await geocodeAddress(exchangeData.dropoffAddress)
+    if (geoD) {
+      exchangeData.dropoffCoords = { lat: geoD.lat, lng: geoD.lng }
+      if (receiverProfile) {
+        receiverProfile.lat = geoD.lat
+        receiverProfile.lng = geoD.lng
+        await receiverProfile.save().catch(() => {})
+      }
+    }
+  }
+
   let notificationPayload = null
 
   if (deliveryType === 'direct_pickup') {
@@ -802,8 +823,8 @@ export const getMyExchanges = asyncHandler(async (req, res) => {
   }
 
   const exchanges = await Exchange.find(filter)
-    .populate('donation', 'title category quantity unit imageUrl pickupAddress pickupWindow')
-    .populate('items.donation', 'title category quantity unit imageUrl')
+    .populate('donation', 'title category quantity unit imageUrl pickupAddress pickupWindow lat lng')
+    .populate('items.donation', 'title category quantity unit imageUrl lat lng')
     .populate('receiver', 'fullName email phone')
     .populate('volunteer', 'fullName email phone')
     .sort({ createdAt: -1 })
@@ -817,7 +838,7 @@ export const getMyExchanges = asyncHandler(async (req, res) => {
     : []
   const profileMap = new Map(volProfiles.map((p) => [p.user.toString(), p]))
 
-  // Ensure codes and volunteer live statistics are properly assigned
+  // Ensure codes, accurate coordinates, and volunteer live statistics are properly assigned
   for (const ex of exchanges) {
     let changed = false
     if (!ex.pickupCode) {
@@ -833,6 +854,22 @@ export const getMyExchanges = asyncHandler(async (req, res) => {
       changed = true
     }
 
+    // Resolve missing coordinates dynamically to fix legacy/missing coordinate exchanges
+    if ((ex.pickupCoords?.lat == null || isNaN(Number(ex.pickupCoords?.lat))) && ex.pickupAddress) {
+      const geoP = await geocodeAddress(ex.pickupAddress)
+      if (geoP) {
+        ex.pickupCoords = { lat: geoP.lat, lng: geoP.lng }
+        changed = true
+      }
+    }
+    if ((ex.dropoffCoords?.lat == null || isNaN(Number(ex.dropoffCoords?.lat))) && ex.dropoffAddress) {
+      const geoD = await geocodeAddress(ex.dropoffAddress)
+      if (geoD) {
+        ex.dropoffCoords = { lat: geoD.lat, lng: geoD.lng }
+        changed = true
+      }
+    }
+
     if (ex.volunteer) {
       const volUserKey = (ex.volunteer._id || ex.volunteer).toString()
       const volProf = profileMap.get(volUserKey)
@@ -840,6 +877,12 @@ export const getMyExchanges = asyncHandler(async (req, res) => {
         if (!ex.volunteerInfo) ex.volunteerInfo = {}
         ex.volunteerInfo.rating = volProf.rating || 0
         ex.volunteerInfo.deliveriesCompleted = volProf.totalDeliveriesCompleted || 0
+
+        // Ensure volunteer coordinates are populated for Phase 1 routing
+        if ((!ex.volunteerCoords || ex.volunteerCoords.lat == null) && volProf.lat != null && volProf.lng != null) {
+          ex.volunteerCoords = { lat: volProf.lat, lng: volProf.lng }
+          changed = true
+        }
       }
     }
 

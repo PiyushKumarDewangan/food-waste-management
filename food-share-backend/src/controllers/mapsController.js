@@ -4,7 +4,39 @@ import {
   getPlaceAutocomplete,
   getPlaceDetails,
   getRoadRoute,
+  geocodeAddress,
+  reverseGeocodeCoords,
 } from '../utils/googleMapsService.js'
+
+/**
+ * GET /api/maps/geocode?address=...
+ */
+export const geocode = asyncHandler(async (req, res) => {
+  const { address } = req.query
+  if (!address || typeof address !== 'string' || address.trim().length < 2) {
+    return res.status(400).json(new ApiResponse(400, null, 'address parameter is required.'))
+  }
+
+  const location = await geocodeAddress(address)
+  if (!location) {
+    return res.status(404).json(new ApiResponse(404, null, 'Address could not be geocoded.'))
+  }
+
+  return res.status(200).json(new ApiResponse(200, { location }, 'Address geocoded successfully.'))
+})
+
+/**
+ * GET /api/maps/reverse-geocode?lat=...&lng=...
+ */
+export const reverseGeocode = asyncHandler(async (req, res) => {
+  const { lat, lng } = req.query
+  if (lat == null || lng == null || isNaN(Number(lat)) || isNaN(Number(lng))) {
+    return res.status(400).json(new ApiResponse(400, null, 'Valid lat and lng query parameters are required.'))
+  }
+
+  const result = await reverseGeocodeCoords(Number(lat), Number(lng))
+  return res.status(200).json(new ApiResponse(200, { location: result }, 'Coordinates reverse geocoded.'))
+})
 
 /**
  * GET /api/maps/autocomplete?input=...
@@ -42,15 +74,32 @@ export const placeDetails = asyncHandler(async (req, res) => {
 
 /**
  * POST /api/maps/route
- * Body: { originLat, originLng, destLat, destLng, travelMode }
+ * Body: { originLat, originLng, destLat, destLng, originAddress, destAddress, travelMode }
  */
 export const computeRoute = asyncHandler(async (req, res) => {
-  const { originLat, originLng, destLat, destLng, travelMode } = req.body
+  let { originLat, originLng, destLat, destLng, originAddress, destAddress, travelMode } = req.body
+
+  // If coordinates are missing, resolve from addresses
+  if ((originLat == null || isNaN(Number(originLat))) && originAddress) {
+    const geoO = await geocodeAddress(originAddress)
+    if (geoO) {
+      originLat = geoO.lat
+      originLng = geoO.lng
+    }
+  }
+
+  if ((destLat == null || isNaN(Number(destLat))) && destAddress) {
+    const geoD = await geocodeAddress(destAddress)
+    if (geoD) {
+      destLat = geoD.lat
+      destLng = geoD.lng
+    }
+  }
 
   if (originLat == null || originLng == null || destLat == null || destLng == null) {
     return res
       .status(400)
-      .json(new ApiResponse(400, null, 'originLat, originLng, destLat, destLng are required.'))
+      .json(new ApiResponse(400, null, 'originLat, originLng, destLat, destLng (or resolvable addresses) are required.'))
   }
 
   const route = await getRoadRoute({
@@ -58,6 +107,8 @@ export const computeRoute = asyncHandler(async (req, res) => {
     originLng,
     destLat,
     destLng,
+    originAddress,
+    destAddress,
     travelMode,
   })
 

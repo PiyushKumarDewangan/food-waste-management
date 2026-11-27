@@ -1,37 +1,47 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useMemo } from 'react'
 import L from 'leaflet'
 import {
   Navigation,
   Maximize2,
   Minimize2,
-  MapPin,
   ExternalLink,
-  ShieldCheck,
   Plus,
   Minus,
   LocateFixed,
   Route as RouteIcon,
+  Layers,
+  Clock,
+  MapPin,
+  CheckCircle2,
+  Sparkles,
+  Bike,
+  Car,
+  Footprints,
 } from 'lucide-react'
-import { getRoadRoute } from '../../services/mapsService'
+import { getRoadRoute, geocodeAddress } from '../../services/mapsService'
 
-// Default fallback coordinates (e.g., Indore/Central India or SF depending on project context)
-const DEFAULT_CENTER = { lat: 22.7196, lng: 75.8577 }
+// Default center (Bhilai / Durg / Raipur central corridor)
+const DEFAULT_CENTER = { lat: 21.2144, lng: 81.3805 }
 
 // Standard Google Encoded Polyline decoder
 function decodePolyline(encoded) {
   if (!encoded || typeof encoded !== 'string') return []
   const points = []
-  let index = 0, len = encoded.length
-  let lat = 0, lng = 0
+  let index = 0,
+    len = encoded.length
+  let lat = 0,
+    lng = 0
 
   while (index < len) {
-    let b, shift = 0, result = 0
+    let b,
+      shift = 0,
+      result = 0
     do {
       b = encoded.charCodeAt(index++) - 63
       result |= (b & 0x1f) << shift
       shift += 5
     } while (b >= 0x20)
-    const dlat = ((result & 1) ? ~(result >> 1) : (result >> 1))
+    const dlat = result & 1 ? ~(result >> 1) : result >> 1
     lat += dlat
 
     shift = 0
@@ -41,7 +51,7 @@ function decodePolyline(encoded) {
       result |= (b & 0x1f) << shift
       shift += 5
     } while (b >= 0x20)
-    const dlng = ((result & 1) ? ~(result >> 1) : (result >> 1))
+    const dlng = result & 1 ? ~(result >> 1) : result >> 1
     lng += dlng
 
     points.push([lat / 1e5, lng / 1e5])
@@ -58,62 +68,216 @@ export default function LiveTrackingMap({
   volunteerName = 'Volunteer Courier',
   volunteerTransport = 'bicycle',
   status = 'in_transit',
-  height = '360px',
+  height = '380px',
   showExternalNav = true,
-  userRole = 'receiver', // 'receiver' | 'donor' | 'volunteer'
+  userRole = 'donor', // 'donor' | 'receiver' | 'volunteer' | 'admin'
 }) {
   const mapContainerRef = useRef(null)
   const mapInstanceRef = useRef(null)
-  const markersRef = useRef({ pickup: null, dropoff: null, volunteer: null, polyline: null })
+  const tileLayerRef = useRef(null)
+  const glowPolylineRef = useRef(null)
+  const markersRef = useRef({
+    pickup: null,
+    dropoff: null,
+    volunteer: null,
+    polyline: null,
+  })
+
   const [isExpanded, setIsExpanded] = useState(false)
+  const [mapStyle, setMapStyle] = useState('streets') // 'streets' | 'satellite'
   const [routeInfo, setRouteInfo] = useState({ distanceKm: null, etaMinutes: null })
   const [roadPolylinePoints, setRoadPolylinePoints] = useState(null)
   const [isRoadRouted, setIsRoadRouted] = useState(false)
+  const [geoNotice, setGeoNotice] = useState('')
 
-  // Resolve valid coordinates with realistic nearby fallbacks if missing
-  const validPickup =
-    pickupCoords?.lat != null && pickupCoords?.lng != null
-      ? { lat: Number(pickupCoords.lat), lng: Number(pickupCoords.lng) }
-      : null
+  // Determine if the current active delivery phase is Pickup (Phase 1) or Dropoff (Phase 2)
+  const isPostHandover = [
+    'picked_up_by_volunteer',
+    'picked_up',
+    'out_for_delivery',
+    'in_transit',
+    'completed',
+    'delivered',
+  ].includes(status)
 
-  const validDropoff =
-    dropoffCoords?.lat != null && dropoffCoords?.lng != null
-      ? { lat: Number(dropoffCoords.lat), lng: Number(dropoffCoords.lng) }
-      : validPickup
-      ? { lat: validPickup.lat + 0.018, lng: validPickup.lng + 0.015 }
-      : null
+  // Leg switcher: strictly for DONOR dashboard to toggle between 'pickup' (Leg 1: volunteer arriving) and 'dropoff' (Leg 2: drop-off to receiver)
+  // For Receiver: shows distance from donor to receiver ('dropoff')
+  // For Volunteer: automatically follows active run step (pickup before handover, dropoff after handover)
+  const [selectedLeg, setSelectedLeg] = useState(isPostHandover ? 'dropoff' : 'pickup')
 
-  const finalPickup = validPickup || (validDropoff ? { lat: validDropoff.lat - 0.018, lng: validDropoff.lng - 0.015 } : DEFAULT_CENTER)
-  const finalDropoff = validDropoff || { lat: finalPickup.lat + 0.018, lng: finalPickup.lng + 0.015 }
+  // Automatically sync active leg when status advances
+  useEffect(() => {
+    setSelectedLeg(isPostHandover ? 'dropoff' : 'pickup')
+  }, [isPostHandover, status])
 
-  const validVolunteer =
-    volunteerCoords?.lat != null && volunteerCoords?.lng != null
-      ? { lat: Number(volunteerCoords.lat), lng: Number(volunteerCoords.lng) }
-      : ['picked_up_by_volunteer', 'picked_up', 'out_for_delivery', 'in_transit'].includes(status)
-      ? {
-          lat: (finalPickup.lat * 0.4 + finalDropoff.lat * 0.6),
-          lng: (finalPickup.lng * 0.4 + finalDropoff.lng * 0.6),
+  const activeLeg =
+    userRole === 'donor'
+      ? selectedLeg
+      : userRole === 'receiver'
+      ? 'dropoff'
+      : isPostHandover
+      ? 'dropoff'
+      : 'pickup'
+
+  // 1. Asynchronously resolve missing or degenerate coordinates using real Geocoding
+  const [resolvedCoords, setResolvedCoords] = useState({
+    pickup:
+      pickupCoords?.lat != null && pickupCoords?.lng != null
+        ? { lat: Number(pickupCoords.lat), lng: Number(pickupCoords.lng) }
+        : null,
+    dropoff:
+      dropoffCoords?.lat != null && dropoffCoords?.lng != null
+        ? { lat: Number(dropoffCoords.lat), lng: Number(dropoffCoords.lng) }
+        : null,
+  })
+
+  useEffect(() => {
+    let isCancelled = false
+
+    async function resolveCoordinates() {
+      let p =
+        pickupCoords?.lat != null && pickupCoords?.lng != null
+          ? { lat: Number(pickupCoords.lat), lng: Number(pickupCoords.lng) }
+          : null
+      let d =
+        dropoffCoords?.lat != null && dropoffCoords?.lng != null
+          ? { lat: Number(dropoffCoords.lat), lng: Number(dropoffCoords.lng) }
+          : null
+
+      // Check if coordinates are suspiciously identical (< 0.2 km) while addresses differ
+      const isSuspectIdentical =
+        p &&
+        d &&
+        Math.abs(p.lat - d.lat) < 0.002 &&
+        Math.abs(p.lng - d.lng) < 0.002 &&
+        pickupAddress &&
+        dropoffAddress &&
+        pickupAddress.trim().toLowerCase() !== dropoffAddress.trim().toLowerCase()
+
+      if (!p || isSuspectIdentical) {
+        if (pickupAddress && pickupAddress !== 'Donor Pickup Location') {
+          const geoP = await geocodeAddress(pickupAddress)
+          if (geoP && !isCancelled) {
+            p = { lat: geoP.lat, lng: geoP.lng }
+          }
         }
-      : status === 'volunteer_assigned'
-      ? {
-          lat: finalPickup.lat - 0.008,
-          lng: finalPickup.lng - 0.006,
-        }
-      : null
+      }
 
-  // Compute real road routing via Google Routes API (with Haversine fallback)
+      if (!d || isSuspectIdentical) {
+        if (dropoffAddress && dropoffAddress !== 'Receiver Delivery Address') {
+          const geoD = await geocodeAddress(dropoffAddress)
+          if (geoD && !isCancelled) {
+            d = { lat: geoD.lat, lng: geoD.lng }
+          }
+        }
+      }
+
+      // Accurate Chhattisgarh defaults if geocoding fails
+      if (!p) {
+        const lowerP = (pickupAddress || '').toLowerCase()
+        if (lowerP.includes('bhilai') || lowerP.includes('sector')) {
+          p = { lat: 21.1965, lng: 81.3552 } // Sector 4 Bhilai
+        } else {
+          p = DEFAULT_CENTER
+        }
+      }
+
+      if (!d) {
+        const lowerD = (dropoffAddress || '').toLowerCase()
+        if (lowerD.includes('tikrapara') || lowerD.includes('raipur')) {
+          d = { lat: 21.2269, lng: 81.6366 } // Tikrapara Raipur
+        } else {
+          d = { lat: p.lat + 0.03, lng: p.lng + 0.25 }
+        }
+      }
+
+      if (!isCancelled) {
+        setResolvedCoords({ pickup: p, dropoff: d })
+      }
+    }
+
+    resolveCoordinates()
+
+    return () => {
+      isCancelled = true
+    }
+  }, [
+    pickupCoords?.lat,
+    pickupCoords?.lng,
+    dropoffCoords?.lat,
+    dropoffCoords?.lng,
+    pickupAddress,
+    dropoffAddress,
+  ])
+
+  const finalPickup = resolvedCoords.pickup || DEFAULT_CENTER
+  const finalDropoff =
+    resolvedCoords.dropoff || { lat: finalPickup.lat + 0.03, lng: finalPickup.lng + 0.25 }
+
+  // Volunteer courier position along the route
+  const validVolunteer = useMemo(() => {
+    if (volunteerCoords?.lat != null && volunteerCoords?.lng != null) {
+      return { lat: Number(volunteerCoords.lat), lng: Number(volunteerCoords.lng) }
+    }
+    if (['picked_up_by_volunteer', 'picked_up', 'out_for_delivery', 'in_transit'].includes(status)) {
+      return {
+        lat: Number((finalPickup.lat * 0.45 + finalDropoff.lat * 0.55).toFixed(6)),
+        lng: Number((finalPickup.lng * 0.45 + finalDropoff.lng * 0.55).toFixed(6)),
+      }
+    }
+    if (status === 'volunteer_assigned' || status === 'assigned') {
+      return {
+        lat: Number((finalPickup.lat + 0.014).toFixed(6)),
+        lng: Number((finalPickup.lng - 0.016).toFixed(6)),
+      }
+    }
+    return null
+  }, [
+    volunteerCoords?.lat,
+    volunteerCoords?.lng,
+    status,
+    finalPickup.lat,
+    finalPickup.lng,
+    finalDropoff.lat,
+    finalDropoff.lng,
+  ])
+
+  // 2. Compute Road Route based on Active Phase / Active Leg
   useEffect(() => {
     let isCancelled = false
 
     async function fetchRoadRoute() {
-      if (!finalPickup || !finalDropoff) return
+      // Determine origin and destination for the current leg
+      let originLat, originLng, destLat, destLng, originAddr, destAddr
+
+      if (activeLeg === 'pickup' && validVolunteer) {
+        // Phase 1 Leg: Volunteer Courier -> Donor Pickup Location
+        originLat = validVolunteer.lat
+        originLng = validVolunteer.lng
+        destLat = finalPickup.lat
+        destLng = finalPickup.lng
+        originAddr = 'Volunteer Courier'
+        destAddr = pickupAddress
+      } else {
+        // Phase 2 Leg: Donor Pickup -> Receiver Dropoff Location
+        originLat = finalPickup.lat
+        originLng = finalPickup.lng
+        destLat = finalDropoff.lat
+        destLng = finalDropoff.lng
+        originAddr = pickupAddress
+        destAddr = dropoffAddress
+      }
+
+      if (!originLat || !destLat) return
 
       try {
         const route = await getRoadRoute({
-          originLat: finalPickup.lat,
-          originLng: finalPickup.lng,
-          destLat: finalDropoff.lat,
-          destLng: finalDropoff.lng,
+          originLat,
+          originLng,
+          destLat,
+          destLng,
+          originAddress: originAddr,
+          destAddress: destAddr,
           travelMode: volunteerTransport,
         })
 
@@ -132,24 +296,24 @@ export default function LiveTrackingMap({
           }
         }
       } catch (err) {
-        console.warn('Real road routing calculation fell back to straight-line:', err)
+        console.warn('Road route calculation fallback:', err.message)
       }
 
-      // Straight-line fallback if Routes API returned empty or failed
+      // Straight-line fallback math if offline or quota limit
       if (!isCancelled) {
         setIsRoadRouted(false)
-        const R = 6371 // Earth radius in km
-        const dLat = ((finalDropoff.lat - finalPickup.lat) * Math.PI) / 180
-        const dLon = ((finalDropoff.lng - finalPickup.lng) * Math.PI) / 180
+        const R = 6371
+        const dLat = ((destLat - originLat) * Math.PI) / 180
+        const dLon = ((destLng - originLng) * Math.PI) / 180
         const a =
           Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-          Math.cos((finalPickup.lat * Math.PI) / 180) *
-            Math.cos((finalDropoff.lat * Math.PI) / 180) *
+          Math.cos((originLat * Math.PI) / 180) *
+            Math.cos((destLat * Math.PI) / 180) *
             Math.sin(dLon / 2) *
             Math.sin(dLon / 2)
         const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
         const dist = Number((R * c).toFixed(1))
-        const eta = Math.max(5, Math.round((dist / 20) * 60) + 4)
+        const eta = Math.max(5, Math.round((dist / 30) * 60) + 3)
         setRouteInfo({ distanceKm: dist, etaMinutes: eta })
       }
     }
@@ -159,43 +323,52 @@ export default function LiveTrackingMap({
     return () => {
       isCancelled = true
     }
-  }, [finalPickup.lat, finalPickup.lng, finalDropoff.lat, finalDropoff.lng, volunteerTransport])
+  }, [
+    activeLeg,
+    finalPickup.lat,
+    finalPickup.lng,
+    finalDropoff.lat,
+    finalDropoff.lng,
+    validVolunteer?.lat,
+    validVolunteer?.lng,
+    pickupAddress,
+    dropoffAddress,
+    volunteerTransport,
+  ])
 
-  // Create Custom Leaflet DivIcons
+  // Custom Modern Markers
   const createDonorIcon = () =>
     L.divIcon({
       className: 'custom-map-marker',
       html: `
-        <div style="position: relative; display: flex; flex-direction: column; align-items: center; cursor: pointer;">
-          <div style="background: #2E7D32; color: #fff; width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13px; box-shadow: 0 4px 10px rgba(46,125,50,0.4); border: 2px solid #fff;">
-            A
+        <div style="position: relative; display: flex; flex-direction: column; align-items: center; cursor: pointer; filter: drop-shadow(0 6px 14px rgba(16,185,129,0.4));">
+          <div style="background: linear-gradient(135deg, #10B981 0%, #047857 100%); color: #fff; width: 36px; height: 36px; border-radius: 50% 50% 50% 4px; transform: rotate(-45deg); display: flex; align-items: center; justify-content: center; border: 2.5px solid #fff; box-shadow: 0 4px 10px rgba(0,0,0,0.25);">
+            <div style="transform: rotate(45deg); font-weight: 900; font-size: 14px; letter-spacing: -0.5px;">A</div>
           </div>
-          <div style="width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 7px solid #2E7D32; margin-top: -1px;"></div>
-          <span style="background: rgba(17,24,39,0.85); color: #fff; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 6px; margin-top: 2px; white-space: nowrap; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
-            Donor Pickup
+          <span style="background: #064E3B; color: #ECFDF5; font-size: 10px; font-weight: 700; padding: 2.5px 8px; border-radius: 9999px; margin-top: 4px; white-space: nowrap; box-shadow: 0 2px 6px rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.2);">
+            Donor Pickup · ${(pickupAddress || 'Donor').split(',')[0]}
           </span>
         </div>
       `,
-      iconSize: [80, 56],
-      iconAnchor: [40, 42],
+      iconSize: [140, 64],
+      iconAnchor: [70, 48],
     })
 
   const createReceiverIcon = () =>
     L.divIcon({
       className: 'custom-map-marker',
       html: `
-        <div style="position: relative; display: flex; flex-direction: column; align-items: center; cursor: pointer;">
-          <div style="background: #1565C0; color: #fff; width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13px; box-shadow: 0 4px 10px rgba(21,101,192,0.4); border: 2px solid #fff;">
-            B
+        <div style="position: relative; display: flex; flex-direction: column; align-items: center; cursor: pointer; filter: drop-shadow(0 6px 14px rgba(37,99,235,0.4));">
+          <div style="background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%); color: #fff; width: 36px; height: 36px; border-radius: 50% 50% 50% 4px; transform: rotate(-45deg); display: flex; align-items: center; justify-content: center; border: 2.5px solid #fff; box-shadow: 0 4px 10px rgba(0,0,0,0.25);">
+            <div style="transform: rotate(45deg); font-weight: 900; font-size: 14px; letter-spacing: -0.5px;">B</div>
           </div>
-          <div style="width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 7px solid #1565C0; margin-top: -1px;"></div>
-          <span style="background: rgba(17,24,39,0.85); color: #fff; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 6px; margin-top: 2px; white-space: nowrap; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
-            Receiver Drop-off
+          <span style="background: #1E3A8A; color: #EFF6FF; font-size: 10px; font-weight: 700; padding: 2.5px 8px; border-radius: 9999px; margin-top: 4px; white-space: nowrap; box-shadow: 0 2px 6px rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.2);">
+            Receiver Drop-off · ${(dropoffAddress || 'Receiver').split(',')[0]}
           </span>
         </div>
       `,
-      iconSize: [80, 56],
-      iconAnchor: [40, 42],
+      iconSize: [140, 64],
+      iconAnchor: [70, 48],
     })
 
   const createVolunteerIcon = () =>
@@ -203,24 +376,23 @@ export default function LiveTrackingMap({
       className: 'custom-map-marker',
       html: `
         <div style="position: relative; display: flex; flex-direction: column; align-items: center; cursor: pointer;">
-          <div style="position: absolute; width: 44px; height: 44px; background: rgba(16,185,129,0.25); border-radius: 50%; animation: pulse 2s infinite ease-in-out;"></div>
-          <div style="background: #10B981; color: #fff; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 16px; box-shadow: 0 4px 12px rgba(16,185,129,0.5); border: 2.5px solid #fff; z-index: 2;">
+          <div style="position: absolute; top: -6px; width: 50px; height: 50px; background: rgba(16,185,129,0.35); border-radius: 50%; animation: ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
+          <div style="background: linear-gradient(135deg, #10B981 0%, #059669 100%); color: #fff; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; box-shadow: 0 6px 16px rgba(16,185,129,0.5); border: 3px solid #fff; z-index: 2;">
             🛵
           </div>
-          <span style="background: #065F46; color: #fff; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 6px; margin-top: 3px; white-space: nowrap; box-shadow: 0 2px 5px rgba(0,0,0,0.25); z-index: 2;">
-            ${volunteerName.split(' ')[0]} (Courier)
+          <span style="background: rgba(6, 78, 59, 0.95); backdrop-filter: blur(4px); color: #fff; font-size: 10px; font-weight: 800; padding: 3px 8px; border-radius: 9999px; margin-top: 4px; white-space: nowrap; box-shadow: 0 3px 8px rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.25); z-index: 2;">
+            ${(volunteerName || 'Volunteer').split(' ')[0]} (Courier)
           </span>
         </div>
       `,
-      iconSize: [90, 60],
-      iconAnchor: [45, 42],
+      iconSize: [130, 68],
+      iconAnchor: [65, 46],
     })
 
-  // Initialize and update map
+  // Initialize and update Leaflet Map
   useEffect(() => {
     if (!mapContainerRef.current) return
 
-    // Initialize Map if not already created
     if (!mapInstanceRef.current) {
       const map = L.map(mapContainerRef.current, {
         zoomControl: false,
@@ -228,83 +400,150 @@ export default function LiveTrackingMap({
         scrollWheelZoom: false,
       }).setView([finalPickup.lat, finalPickup.lng], 13)
 
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-      }).addTo(map)
+      const streetLayer = L.tileLayer(
+        'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
+        {
+          subdomains: ['a', 'b', 'c'],
+          maxZoom: 19,
+        }
+      ).addTo(map)
 
+      tileLayerRef.current = streetLayer
       mapInstanceRef.current = map
     }
 
     const map = mapInstanceRef.current
 
-    // Clear old markers & lines
+    // Tile style toggle
+    if (tileLayerRef.current) {
+      map.removeLayer(tileLayerRef.current)
+      if (mapStyle === 'satellite') {
+        tileLayerRef.current = L.tileLayer(
+          'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+          { maxZoom: 18 }
+        ).addTo(map)
+      } else {
+        tileLayerRef.current = L.tileLayer(
+          'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
+          { subdomains: ['a', 'b', 'c'], maxZoom: 19 }
+        ).addTo(map)
+      }
+    }
+
+    // Clean up old markers
     if (markersRef.current.pickup) map.removeLayer(markersRef.current.pickup)
     if (markersRef.current.dropoff) map.removeLayer(markersRef.current.dropoff)
     if (markersRef.current.volunteer) map.removeLayer(markersRef.current.volunteer)
     if (markersRef.current.polyline) map.removeLayer(markersRef.current.polyline)
+    if (glowPolylineRef.current) map.removeLayer(glowPolylineRef.current)
 
     // Add Donor Marker (A)
-    const donorMarker = L.marker([finalPickup.lat, finalPickup.lng], { icon: createDonorIcon() })
-      .bindPopup(`<strong>Pickup (Donor)</strong><br/>${pickupAddress}`)
+    const donorMarker = L.marker([finalPickup.lat, finalPickup.lng], {
+      icon: createDonorIcon(),
+      zIndexOffset: 120,
+    })
+      .bindPopup(
+        `<div style="font-family: inherit; padding: 4px;"><strong>Pickup Location (Donor)</strong><br/><span style="color: #4B5563;">${pickupAddress}</span></div>`
+      )
       .addTo(map)
     markersRef.current.pickup = donorMarker
 
     // Add Receiver Marker (B)
-    const receiverMarker = L.marker([finalDropoff.lat, finalDropoff.lng], { icon: createReceiverIcon() })
-      .bindPopup(`<strong>Drop-off (Receiver)</strong><br/>${dropoffAddress}`)
+    const receiverMarker = L.marker([finalDropoff.lat, finalDropoff.lng], {
+      icon: createReceiverIcon(),
+      zIndexOffset: 100,
+    })
+      .bindPopup(
+        `<div style="font-family: inherit; padding: 4px;"><strong>Drop-off Location (Receiver)</strong><br/><span style="color: #4B5563;">${dropoffAddress}</span></div>`
+      )
       .addTo(map)
     markersRef.current.dropoff = receiverMarker
 
-    // Build polyline route points
-    const routePoints = [[finalPickup.lat, finalPickup.lng]]
-
-    // Add Volunteer Marker if available
+    // Add Courier Marker if active
     if (validVolunteer) {
-      const volMarker = L.marker([validVolunteer.lat, validVolunteer.lng], { icon: createVolunteerIcon() })
-        .bindPopup(`<strong>Courier: ${volunteerName}</strong><br/>Status: ${status.replace(/_/g, ' ')}`)
+      const volMarker = L.marker([validVolunteer.lat, validVolunteer.lng], {
+        icon: createVolunteerIcon(),
+        zIndexOffset: 250,
+      })
+        .bindPopup(
+          `<div style="font-family: inherit; padding: 4px;"><strong>Courier: ${volunteerName}</strong><br/>Status: ${status.replace(
+            /_/g,
+            ' '
+          )}</div>`
+        )
         .addTo(map)
       markersRef.current.volunteer = volMarker
-      routePoints.push([validVolunteer.lat, validVolunteer.lng])
     }
 
-    routePoints.push([finalDropoff.lat, finalDropoff.lng])
-
-    // Draw route polyline — use real road polyline if available, else straight dashed line
-    let polyline
-    const activeRouteCoords =
-      roadPolylinePoints && roadPolylinePoints.length > 0 ? roadPolylinePoints : routePoints
-
-    if (roadPolylinePoints && roadPolylinePoints.length > 0) {
-      polyline = L.polyline(roadPolylinePoints, {
-        color: '#16a34a',
-        weight: 5,
-        opacity: 0.88,
-        lineJoin: 'round',
-        lineCap: 'round',
-      }).addTo(map)
+    // Active Route Polyline
+    let fallbackPoints = []
+    if (activeLeg === 'pickup' && validVolunteer) {
+      fallbackPoints = [
+        [validVolunteer.lat, validVolunteer.lng],
+        [finalPickup.lat, finalPickup.lng],
+      ]
     } else {
-      polyline = L.polyline(routePoints, {
-        color: '#2E7D32',
-        weight: 4,
-        opacity: 0.75,
-        dashArray: '8, 8',
-        lineCap: 'round',
-      }).addTo(map)
+      fallbackPoints = [
+        [finalPickup.lat, finalPickup.lng],
+        [finalDropoff.lat, finalDropoff.lng],
+      ]
     }
-    markersRef.current.polyline = polyline
 
-    // Auto-fit bounds
+    const activeRoute =
+      roadPolylinePoints && roadPolylinePoints.length > 0 ? roadPolylinePoints : fallbackPoints
+
+    // 1. Ambient Glow Ribbon
+    const glowLine = L.polyline(activeRoute, {
+      color: activeLeg === 'pickup' ? '#10B981' : '#3B82F6',
+      weight: 10,
+      opacity: 0.32,
+      lineCap: 'round',
+      lineJoin: 'round',
+    }).addTo(map)
+    glowPolylineRef.current = glowLine
+
+    // 2. High-contrast Road Core
+    const coreLine = L.polyline(activeRoute, {
+      color: activeLeg === 'pickup' ? '#047857' : '#1D4ED8',
+      weight: 4.5,
+      opacity: 0.95,
+      lineCap: 'round',
+      lineJoin: 'round',
+      dashArray: roadPolylinePoints ? undefined : '8, 8',
+    }).addTo(map)
+    markersRef.current.polyline = coreLine
+
+    // Fit bounds appropriately around the active leg points
     try {
-      const bounds = L.latLngBounds(activeRouteCoords)
-      map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 })
+      let focusCoords = []
+      if (activeLeg === 'pickup' && validVolunteer) {
+        focusCoords = [
+          [validVolunteer.lat, validVolunteer.lng],
+          [finalPickup.lat, finalPickup.lng],
+        ]
+      } else {
+        focusCoords = [
+          [finalPickup.lat, finalPickup.lng],
+          [finalDropoff.lat, finalDropoff.lng],
+        ]
+        if (validVolunteer && isPostHandover) {
+          focusCoords.push([validVolunteer.lat, validVolunteer.lng])
+        }
+      }
+
+      if (roadPolylinePoints && roadPolylinePoints.length > 0) {
+        roadPolylinePoints.forEach((pt) => focusCoords.push(pt))
+      }
+
+      const bounds = L.latLngBounds(focusCoords)
+      map.fitBounds(bounds, { padding: [60, 60], maxZoom: 15 })
     } catch (e) {
-      // Fallback
+      // bounds fallback
     }
 
-    // Invalidate map size after small delay
     setTimeout(() => {
       map.invalidateSize()
-    }, 250)
+    }, 200)
   }, [
     finalPickup.lat,
     finalPickup.lng,
@@ -312,99 +551,51 @@ export default function LiveTrackingMap({
     finalDropoff.lng,
     validVolunteer?.lat,
     validVolunteer?.lng,
-    status,
-    isExpanded,
     roadPolylinePoints,
+    mapStyle,
+    status,
+    activeLeg,
+    isExpanded,
   ])
 
-  const [geoNotice, setGeoNotice] = useState('')
-
-  // Center on volunteer or current GPS location
-  const handleRecenterVolunteer = () => {
+  // Recenter map
+  const handleRecenter = () => {
     if (!mapInstanceRef.current) return
-
-    if (typeof window !== 'undefined' && navigator?.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const lat = Number(pos.coords.latitude.toFixed(6))
-          const lng = Number(pos.coords.longitude.toFixed(6))
-          mapInstanceRef.current.setView([lat, lng], 15)
-          if (markersRef.current.volunteer) {
-            markersRef.current.volunteer.setLatLng([lat, lng])
-          }
-          setGeoNotice('Updated to your live GPS position')
-          setTimeout(() => setGeoNotice(''), 3500)
-        },
-        () => {
-          if (validVolunteer) {
-            mapInstanceRef.current.setView([validVolunteer.lat, validVolunteer.lng], 15)
-          } else {
-            const bounds = L.latLngBounds([
-              [finalPickup.lat, finalPickup.lng],
-              [finalDropoff.lat, finalDropoff.lng],
-            ])
-            mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50] })
-          }
-          setGeoNotice('Centering on active delivery route')
-          setTimeout(() => setGeoNotice(''), 3500)
-        },
-        { enableHighAccuracy: true, timeout: 6000 }
-      )
-    } else if (validVolunteer) {
-      mapInstanceRef.current.setView([validVolunteer.lat, validVolunteer.lng], 15)
-    } else {
-      const bounds = L.latLngBounds([
-        [finalPickup.lat, finalPickup.lng],
-        [finalDropoff.lat, finalDropoff.lng],
-      ])
-      mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50] })
+    const allCoords = [
+      [finalPickup.lat, finalPickup.lng],
+      [finalDropoff.lat, finalDropoff.lng],
+    ]
+    if (validVolunteer) {
+      allCoords.push([validVolunteer.lat, validVolunteer.lng])
     }
+    const bounds = L.latLngBounds(allCoords)
+    mapInstanceRef.current.fitBounds(bounds, { padding: [65, 65], maxZoom: 14 })
+    setGeoNotice('Route view centered')
+    setTimeout(() => setGeoNotice(''), 2500)
   }
 
-  // Toggle fullscreen and invalidate size
   const handleToggleFullscreen = () => {
-    const nextState = !isExpanded
-    setIsExpanded(nextState)
+    setIsExpanded((prev) => !prev)
     setTimeout(() => {
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.invalidateSize()
-      }
+      mapInstanceRef.current?.invalidateSize()
     }, 300)
   }
 
-  // Open external Google Maps turn-by-turn navigation from Volunteer Current Location to exact Donor / Receiver Profile Location
+  // External GPS Launcher - ALWAYS PRIORITIZE EXACT GPS COORDINATES
   const openExternalRoute = (targetType = 'pickup') => {
-    // 1. Resolve destination:
-    // Strictly prioritize the real profile address entered by donor or receiver!
-    let destinationParam = ''
+    let destCoord = ''
     if (targetType === 'pickup') {
-      const cleanPickup = (pickupAddress || '').trim()
-      const isGeneric = !cleanPickup || ['Donor Pickup Location', 'Donor Pickup', 'Donor Address', 'Indore'].includes(cleanPickup)
-      if (!isGeneric) {
-        destinationParam = encodeURIComponent(cleanPickup)
-      } else if (pickupCoords?.lat != null && pickupCoords?.lng != null) {
-        destinationParam = `${pickupCoords.lat},${pickupCoords.lng}`
-      } else if (validPickup) {
-        destinationParam = `${validPickup.lat},${validPickup.lng}`
-      } else {
-        destinationParam = `${finalPickup.lat},${finalPickup.lng}`
-      }
+      destCoord =
+        finalPickup?.lat != null && finalPickup?.lng != null
+          ? `${finalPickup.lat},${finalPickup.lng}`
+          : encodeURIComponent((pickupAddress || '').trim() || 'Sector 4 Bhilai')
     } else {
-      // dropoff
-      const cleanDropoff = (dropoffAddress || '').trim()
-      const isGeneric = !cleanDropoff || ['Receiver Delivery Address', 'Receiver Drop-off', 'Receiver Address', 'Indore'].includes(cleanDropoff)
-      if (!isGeneric) {
-        destinationParam = encodeURIComponent(cleanDropoff)
-      } else if (dropoffCoords?.lat != null && dropoffCoords?.lng != null) {
-        destinationParam = `${dropoffCoords.lat},${dropoffCoords.lng}`
-      } else if (validDropoff) {
-        destinationParam = `${validDropoff.lat},${validDropoff.lng}`
-      } else {
-        destinationParam = `${finalDropoff.lat},${finalDropoff.lng}`
-      }
+      destCoord =
+        finalDropoff?.lat != null && finalDropoff?.lng != null
+          ? `${finalDropoff.lat},${finalDropoff.lng}`
+          : encodeURIComponent((dropoffAddress || '').trim() || 'Tikrapara Raipur')
     }
 
-    // 2. Travel mode mapped from volunteer vehicle
     const travelMode =
       volunteerTransport === 'walking'
         ? 'walking'
@@ -414,38 +605,37 @@ export default function LiveTrackingMap({
         ? 'two_wheeler'
         : 'driving'
 
-    const launchMapUrl = (originParam) => {
-      const url = `https://www.google.com/maps/dir/?api=1&origin=${originParam}&destination=${destinationParam}&travelmode=${travelMode}`
-      window.open(url, '_blank', 'noopener,noreferrer')
-    }
-
-    // 3. Origin: volunteer live GPS location (current device location)
-    if (typeof window !== 'undefined' && navigator?.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const lat = Number(pos.coords.latitude.toFixed(6))
-          const lng = Number(pos.coords.longitude.toFixed(6))
-          launchMapUrl(`${lat},${lng}`)
-        },
-        () => {
-          if (volunteerCoords?.lat != null && volunteerCoords?.lng != null) {
-            launchMapUrl(`${volunteerCoords.lat},${volunteerCoords.lng}`)
-          } else {
-            launchMapUrl('Current+Location')
-          }
-        },
-        { enableHighAccuracy: true, timeout: 3500 }
-      )
-    } else if (volunteerCoords?.lat != null && volunteerCoords?.lng != null) {
-      launchMapUrl(`${volunteerCoords.lat},${volunteerCoords.lng}`)
-    } else {
-      launchMapUrl('Current+Location')
-    }
+    const url = `https://www.google.com/maps/dir/?api=1&origin=Current+Location&destination=${destCoord}&travelmode=${travelMode}`
+    window.open(url, '_blank', 'noopener,noreferrer')
   }
+
+  // Status and Phase Details
+  const phaseTitle = useMemo(() => {
+    if (userRole === 'receiver') {
+      return isPostHandover
+        ? 'Courier Out for Delivery to Your Location'
+        : 'Courier Assigned · En Route to Donor Pickup'
+    }
+    if (userRole === 'donor') {
+      return activeLeg === 'pickup'
+        ? 'Leg 1: Courier Arriving to Pickup Food'
+        : 'Leg 2: Food Collected · Out for Delivery to Receiver'
+    }
+    return isPostHandover
+      ? 'En Route to Drop-off Recipient'
+      : 'En Route to Donor Pickup'
+  }, [userRole, activeLeg, isPostHandover])
+
+  const legSubtitle = useMemo(() => {
+    if (activeLeg === 'pickup') {
+      return `${(volunteerName || 'Volunteer Courier').split(' ')[0]} ➔ ${(pickupAddress || 'Donor Pickup').split(',')[0]}`
+    }
+    return `${(pickupAddress || 'Donor Pickup').split(',')[0]} ➔ ${(dropoffAddress || 'Receiver Drop-off').split(',')[0]}`
+  }, [activeLeg, volunteerName, pickupAddress, dropoffAddress])
 
   return (
     <div
-      className={`relative rounded-2xl overflow-hidden border border-gray-200 bg-gray-50 shadow-xs transition-all ${
+      className={`relative rounded-3xl overflow-hidden border border-slate-200/90 shadow-sm bg-slate-50 transition-all ${
         isExpanded ? 'fixed inset-4 z-50 shadow-2xl bg-white' : ''
       }`}
       style={{ height: isExpanded ? 'calc(100vh - 32px)' : height }}
@@ -453,145 +643,205 @@ export default function LiveTrackingMap({
       {/* Map Leaflet Container */}
       <div ref={mapContainerRef} className="w-full h-full z-0" />
 
-      {/* Top Floating Header Card */}
-      <div className="absolute top-3 left-3 right-3 sm:right-auto z-10 flex flex-wrap items-center gap-2 pointer-events-none">
-        <div className="bg-white/95 backdrop-blur-md px-3.5 py-2 rounded-xl border border-gray-200/80 shadow-md flex items-center gap-2.5 pointer-events-auto">
-          <span className="relative flex h-2.5 w-2.5">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
-          </span>
-          <span className="text-xs font-bold text-gray-900">
-            {['picked_up_by_volunteer', 'picked_up', 'out_for_delivery', 'in_transit'].includes(status)
-              ? 'Courier In Transit'
-              : status === 'volunteer_assigned'
-              ? 'Volunteer Assigned (To Pickup)'
-              : 'Direct Exchange Route'}
-          </span>
-          {routeInfo.distanceKm && (
-            <span className="text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-100 flex items-center gap-1">
-              {isRoadRouted && <RouteIcon className="w-3 h-3 text-emerald-600" />}
-              <span>{isRoadRouted ? `${routeInfo.distanceKm} km` : `~${routeInfo.distanceKm} km`}</span>
-              <span>·</span>
-              <span>ETA {routeInfo.etaMinutes}m</span>
-              {isRoadRouted && (
-                <span className="text-[9px] font-bold text-emerald-900 bg-emerald-200/60 px-1 py-0.2 rounded uppercase">
-                  Road
-                </span>
-              )}
-            </span>
-          )}
-        </div>
-      </div>
+      {/* Modern Top-Left Floating HUD */}
+      <div className="absolute top-3 left-3 right-3 sm:right-auto z-10 flex flex-col gap-2 pointer-events-none">
+        <div className="bg-white/95 backdrop-blur-md px-4 py-3 rounded-2xl border border-slate-200/80 shadow-xl flex flex-col gap-2 pointer-events-auto max-w-md">
+          {/* Status Row with Phase Beacon */}
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="relative flex h-3 w-3">
+                <span
+                  className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                    activeLeg === 'pickup' ? 'bg-emerald-400' : 'bg-blue-400'
+                  }`}
+                />
+                <span
+                  className={`relative inline-flex rounded-full h-3 w-3 ${
+                    activeLeg === 'pickup' ? 'bg-emerald-600' : 'bg-blue-600'
+                  }`}
+                />
+              </span>
+              <span className="text-xs font-black text-slate-800 tracking-tight">
+                {phaseTitle}
+              </span>
+            </div>
 
-      {/* Top-Right Control Buttons */}
-      <div className="absolute top-3 right-3 z-10 flex items-center gap-1.5">
-        {/* Vertical Zoom Controls (Plus & Minus) */}
-        <div className="flex flex-col rounded-xl overflow-hidden border border-gray-200 shadow-md bg-white/95 backdrop-blur-md">
-          <button
-            type="button"
-            onClick={() => mapInstanceRef.current?.zoomIn()}
-            className="p-2 hover:bg-emerald-50 text-gray-700 hover:text-[#2E7D32] transition-colors border-b border-gray-100 flex items-center justify-center cursor-pointer"
-            title="Zoom In (+)"
-            aria-label="Zoom In"
-          >
-            <Plus className="w-4 h-4 text-gray-800" />
-          </button>
-          <button
-            type="button"
-            onClick={() => mapInstanceRef.current?.zoomOut()}
-            className="p-2 hover:bg-emerald-50 text-gray-700 hover:text-[#2E7D32] transition-colors flex items-center justify-center cursor-pointer"
-            title="Zoom Out (-)"
-            aria-label="Zoom Out"
-          >
-            <Minus className="w-4 h-4 text-gray-800" />
-          </button>
-        </div>
-
-        <button
-          type="button"
-          onClick={handleRecenterVolunteer}
-          className="p-2 bg-white/95 backdrop-blur-md hover:bg-emerald-50 text-gray-700 hover:text-[#2E7D32] rounded-xl border border-gray-200 shadow-md transition-colors cursor-pointer"
-          title="Current Location / Re-center Route"
-          aria-label="Current Location / Re-center Route"
-        >
-          <LocateFixed className="w-4 h-4 text-emerald-700" />
-        </button>
-
-        <button
-          type="button"
-          onClick={handleToggleFullscreen}
-          className="p-2 bg-white/95 backdrop-blur-md hover:bg-emerald-50 text-gray-700 hover:text-[#2E7D32] rounded-xl border border-gray-200 shadow-md transition-colors cursor-pointer"
-          title={isExpanded ? 'Minimize Map' : 'Full Screen Map'}
-          aria-label={isExpanded ? 'Minimize Map' : 'Full Screen Map'}
-        >
-          {isExpanded ? <Minimize2 className="w-4 h-4 text-gray-700" /> : <Maximize2 className="w-4 h-4 text-gray-700" />}
-        </button>
-      </div>
-
-      {/* Geolocation feedback notice */}
-      {geoNotice && (
-        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-20 bg-gray-900/90 backdrop-blur-md text-white text-[11px] font-semibold px-3.5 py-1.5 rounded-full shadow-lg pointer-events-none transition-all">
-          {geoNotice}
-        </div>
-      )}
-
-      {/* Bottom Floating Navigation Toolbar */}
-      {showExternalNav && (
-        <div className="absolute bottom-3 left-3 right-3 z-10 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
-          {/* Legend */}
-          <div className="bg-white/95 backdrop-blur-md px-3 py-1.5 rounded-xl border border-gray-200/80 shadow-md flex items-center gap-3 text-[11px] font-medium text-gray-700 pointer-events-auto">
-            <span className="flex items-center gap-1">
-              <span className="w-2.5 h-2.5 rounded-full bg-[#2E7D32]" />
-              <strong>A:</strong> Pickup
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="w-2.5 h-2.5 rounded-full bg-[#1565C0]" />
-              <strong>B:</strong> Drop-off
-            </span>
-            {validVolunteer && (
-              <span className="flex items-center gap-1 text-emerald-700 font-bold">
-                🛵 Courier Live
+            {/* Live Distance & ETA metrics pill */}
+            {routeInfo.distanceKm != null && (
+              <span
+                className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border flex items-center gap-1.5 shadow-2xs ${
+                  activeLeg === 'pickup'
+                    ? 'text-emerald-800 bg-emerald-50 border-emerald-200'
+                    : 'text-blue-800 bg-blue-50 border-blue-200'
+                }`}
+              >
+                <RouteIcon className="w-3.5 h-3.5" />
+                <span>{routeInfo.distanceKm} km</span>
+                <span className="opacity-40">·</span>
+                <Clock className="w-3 h-3" />
+                <span>ETA {routeInfo.etaMinutes}m</span>
               </span>
             )}
           </div>
 
-          {/* Quick Turn-by-Turn GPS Launcher (Especially useful for Volunteers) */}
-          <div className="flex items-center gap-2 pointer-events-auto">
-            {userRole === 'volunteer' ? (
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => openExternalRoute('pickup')}
-                  className="px-3 py-1.5 bg-[#2E7D32] hover:bg-[#1B5E20] text-white rounded-xl text-xs font-bold shadow-md flex items-center gap-1.5 transition-colors cursor-pointer"
-                  title="Open GPS Navigation from current location to Donor"
-                >
-                  <Navigation className="w-3.5 h-3.5" />
-                  <span>Navigate to Pickup</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => openExternalRoute('dropoff')}
-                  className="px-3 py-1.5 bg-[#1565C0] hover:bg-[#0D47A1] text-white rounded-xl text-xs font-bold shadow-md flex items-center gap-1.5 transition-colors cursor-pointer"
-                  title="Open GPS Navigation from current location to Receiver"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  <span>Navigate to Drop-off</span>
-                </button>
-              </div>
-            ) : (
+          {/* Interactive Leg Switcher Tabs: STRICTLY FOR DONOR DASHBOARD */}
+          {userRole === 'donor' && (
+            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
               <button
                 type="button"
-                onClick={() => openExternalRoute('dropoff')}
-                className="px-3 py-1.5 bg-white/95 backdrop-blur-md hover:bg-white text-gray-700 rounded-xl text-xs font-bold border border-gray-200 shadow-md flex items-center gap-1.5 transition-colors cursor-pointer"
-                title="Open in Google Maps"
+                onClick={() => setSelectedLeg('pickup')}
+                className={`flex-1 text-[11px] font-bold py-1 px-2.5 rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  activeLeg === 'pickup'
+                    ? 'bg-white text-emerald-800 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
               >
-                <ExternalLink className="w-3.5 h-3.5 text-gray-500" />
-                <span>Open in Maps</span>
+                <span>🛵 Leg 1: Courier ➔ Pickup</span>
+                {!isPostHandover && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                )}
               </button>
+              <button
+                type="button"
+                onClick={() => setSelectedLeg('dropoff')}
+                className={`flex-1 text-[11px] font-bold py-1 px-2.5 rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  activeLeg === 'dropoff'
+                    ? 'bg-white text-blue-800 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <span>📍 Leg 2: Pickup ➔ Drop-off</span>
+                {isPostHandover && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+                )}
+              </button>
+            </div>
+          )}
+
+          {/* Route path subtitle & road indicator */}
+          <div className="text-[11px] text-slate-600 flex items-center justify-between gap-2 font-medium">
+            <span className="truncate max-w-[260px] font-semibold text-slate-700">
+              {legSubtitle}
+            </span>
+            {isRoadRouted && (
+              <span className="text-[9px] font-extrabold text-emerald-700 bg-emerald-100/80 px-1.5 py-0.5 rounded-md uppercase tracking-wider shrink-0">
+                Google Road Route
+              </span>
             )}
           </div>
         </div>
+      </div>
+
+      {/* Top-Right Quick Controls */}
+      <div className="absolute top-3 right-3 z-10 flex items-center gap-1.5">
+        {/* Style Toggle (Streets / Satellite) */}
+        <button
+          type="button"
+          onClick={() => setMapStyle((prev) => (prev === 'streets' ? 'satellite' : 'streets'))}
+          className="p-2 bg-white/95 backdrop-blur-md hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 rounded-xl border border-slate-200/90 shadow-md transition-colors cursor-pointer flex items-center gap-1 text-xs font-bold"
+          title={`Switch to ${mapStyle === 'streets' ? 'Satellite' : 'Clean Streets'} View`}
+        >
+          <Layers className="w-4 h-4 text-emerald-700" />
+          <span className="hidden sm:inline capitalize">
+            {mapStyle === 'streets' ? 'Satellite' : 'Streets'}
+          </span>
+        </button>
+
+        {/* Zoom Controls */}
+        <div className="flex flex-col rounded-xl overflow-hidden border border-slate-200/90 shadow-md bg-white/95 backdrop-blur-md">
+          <button
+            type="button"
+            onClick={() => mapInstanceRef.current?.zoomIn()}
+            className="p-2 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 transition-colors border-b border-slate-100 flex items-center justify-center cursor-pointer"
+            title="Zoom In (+)"
+          >
+            <Plus className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => mapInstanceRef.current?.zoomOut()}
+            className="p-2 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 transition-colors flex items-center justify-center cursor-pointer"
+            title="Zoom Out (-)"
+          >
+            <Minus className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Fit Route */}
+        <button
+          type="button"
+          onClick={handleRecenter}
+          className="p-2 bg-white/95 backdrop-blur-md hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 rounded-xl border border-slate-200/90 shadow-md transition-colors cursor-pointer"
+          title="Fit Current Leg on Screen"
+        >
+          <LocateFixed className="w-4 h-4 text-emerald-700" />
+        </button>
+
+        {/* Fullscreen */}
+        <button
+          type="button"
+          onClick={handleToggleFullscreen}
+          className="p-2 bg-white/95 backdrop-blur-md hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 rounded-xl border border-slate-200/90 shadow-md transition-colors cursor-pointer"
+          title={isExpanded ? 'Minimize Map' : 'Full Screen Map'}
+        >
+          {isExpanded ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+        </button>
+      </div>
+
+      {/* Geolocation Notice */}
+      {geoNotice && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-20 bg-slate-900/90 backdrop-blur-md text-white text-[11px] font-semibold px-4 py-1.5 rounded-full shadow-lg pointer-events-none transition-all">
+          {geoNotice}
+        </div>
       )}
+
+      {/* Bottom Floating Legend & Navigation Bar */}
+      <div className="absolute bottom-3 left-3 right-3 z-10 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
+        {/* Modern Clean Legend */}
+        <div className="bg-white/95 backdrop-blur-md px-3.5 py-1.5 rounded-xl border border-slate-200/80 shadow-md flex items-center gap-3 text-[11px] font-medium text-slate-700 pointer-events-auto">
+          <span className="flex items-center gap-1.5 font-semibold text-emerald-800">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-xs" />
+            <span>A: {pickupAddress.split(',')[0]}</span>
+          </span>
+          <span className="text-slate-300">|</span>
+          <span className="flex items-center gap-1.5 font-semibold text-blue-800">
+            <span className="w-2.5 h-2.5 rounded-full bg-blue-500 shadow-xs" />
+            <span>B: {dropoffAddress.split(',')[0]}</span>
+          </span>
+          {validVolunteer && (
+            <>
+              <span className="text-slate-300">|</span>
+              <span className="flex items-center gap-1 text-emerald-700 font-extrabold">
+                🛵 Courier Active
+              </span>
+            </>
+          )}
+        </div>
+
+        {/* Navigation Action Buttons: STRICTLY for Volunteer */}
+        {showExternalNav && userRole === 'volunteer' && (
+          <div className="flex items-center gap-2 pointer-events-auto">
+            <button
+              type="button"
+              onClick={() => openExternalRoute('pickup')}
+              className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Open GPS Navigation directly to Donor coordinates in Google Maps"
+            >
+              <Navigation className="w-3.5 h-3.5" />
+              <span>Navigate to Pickup</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => openExternalRoute('dropoff')}
+              className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-md flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Open GPS Navigation directly to Receiver coordinates in Google Maps"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span>Navigate to Drop-off</span>
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
