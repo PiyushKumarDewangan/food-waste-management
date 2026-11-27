@@ -809,102 +809,110 @@ export const getMyDeliveries = asyncHandler(async (req, res) => {
   // The volunteer must obtain pickupCode from donor and deliveryCode from receiver.
   const populated = await Promise.all(
     deliveries.map(async (d) => {
-      const doc = d.toObject()
-      delete doc.pickupCode
-      delete doc.deliveryCode
+      try {
+        const doc = d.toObject ? d.toObject() : { ...d }
+        delete doc.pickupCode
+        delete doc.deliveryCode
 
-      // Attach cancellation reason if cancelled
-      if (doc.status === 'cancelled') {
-        const lastCancelled = (doc.timeline || []).filter((t) => t.step === 'cancelled').pop()
-        doc.cancellationReason =
-          lastCancelled?.note ||
-          lastCancelled?.title ||
-          'Safe consumption window passed or delivery cancelled.'
-        doc.cancelledAt = lastCancelled?.time || doc.updatedAt
-      }
-
-      if ((!doc.pickupCoords || doc.pickupCoords.lat == null) && doc.donation?.lat != null) {
-        doc.pickupCoords = { lat: doc.donation.lat, lng: doc.donation.lng }
-      }
-
-      // Look up and prioritize actual Donor Profile address
-      if (doc.donor) {
-        const dProfile = await DonorProfile.findOne({ user: doc.donor._id || doc.donor }).lean()
-        if (dProfile?.pickupAddress) {
-          doc.pickupAddress = dProfile.pickupAddress
-        } else if (doc.donor?.address && (!doc.pickupAddress || ['Donor Address', 'Donor Pickup Location', 'Indore'].includes(doc.pickupAddress.trim()))) {
-          doc.pickupAddress = doc.donor.address
+        // Attach cancellation reason if cancelled
+        if (doc.status === 'cancelled') {
+          const lastCancelled = (doc.timeline || []).filter((t) => t.step === 'cancelled').pop()
+          doc.cancellationReason =
+            lastCancelled?.note ||
+            lastCancelled?.title ||
+            'Safe consumption window passed or delivery cancelled.'
+          doc.cancelledAt = lastCancelled?.time || doc.updatedAt
         }
-      }
 
-      // Look up and prioritize actual Receiver Profile address (dropoffAddress entered by receiver in Profile)
-      if (doc.receiver) {
-        const rProfile = await ReceiverProfile.findOne({ user: doc.receiver._id || doc.receiver }).lean()
-        if (rProfile) {
-          if (rProfile.lat != null && rProfile.lng != null && (!doc.dropoffCoords || doc.dropoffCoords.lat == null)) {
-            doc.dropoffCoords = { lat: rProfile.lat, lng: rProfile.lng }
+        if ((!doc.pickupCoords || doc.pickupCoords.lat == null) && doc.donation?.lat != null) {
+          doc.pickupCoords = { lat: doc.donation.lat, lng: doc.donation.lng }
+        }
+
+        // Look up and prioritize actual Donor Profile address
+        if (doc.donor) {
+          const dProfile = await DonorProfile.findOne({ user: doc.donor._id || doc.donor }).lean()
+          if (dProfile?.pickupAddress) {
+            doc.pickupAddress = dProfile.pickupAddress
+          } else if (doc.donor?.address && (!doc.pickupAddress || ['Donor Address', 'Donor Pickup Location', 'Indore'].includes(doc.pickupAddress.trim()))) {
+            doc.pickupAddress = doc.donor.address
           }
-          // Prioritize dropoffAddress entered by user in Profile
-          const realReceiverAddr =
-            (rProfile.dropoffAddress && !['87 Elm Street, Downtown, CA 90210', 'Receiver Address', 'Indore'].includes(rProfile.dropoffAddress.trim())
-              ? rProfile.dropoffAddress.trim()
-              : null) ||
-            (doc.receiver?.address && !['Indore'].includes(doc.receiver.address.trim()) ? doc.receiver.address.trim() : null) ||
-            (rProfile.organizationAddress && !['87 Elm Street, Downtown, CA 90210', 'Receiver Address', 'Indore'].includes(rProfile.organizationAddress.trim())
-              ? rProfile.organizationAddress.trim()
-              : null) ||
-            rProfile.dropoffAddress ||
-            rProfile.organizationAddress ||
-            ''
-          if (realReceiverAddr) {
-            doc.dropoffAddress = realReceiverAddr
-            if (doc._id) {
-              Exchange.updateOne({ _id: doc._id }, { $set: { dropoffAddress: realReceiverAddr } }).catch(() => {})
+        }
+
+        // Look up and prioritize actual Receiver Profile address (dropoffAddress entered by receiver in Profile)
+        if (doc.receiver) {
+          const rProfile = await ReceiverProfile.findOne({ user: doc.receiver._id || doc.receiver }).lean()
+          if (rProfile) {
+            if (rProfile.lat != null && rProfile.lng != null && (!doc.dropoffCoords || doc.dropoffCoords.lat == null)) {
+              doc.dropoffCoords = { lat: rProfile.lat, lng: rProfile.lng }
+            }
+            // Prioritize dropoffAddress entered by user in Profile
+            const realReceiverAddr =
+              (rProfile.dropoffAddress && !['87 Elm Street, Downtown, CA 90210', 'Receiver Address', 'Indore'].includes(rProfile.dropoffAddress.trim())
+                ? rProfile.dropoffAddress.trim()
+                : null) ||
+              (doc.receiver?.address && !['Indore'].includes(doc.receiver.address.trim()) ? doc.receiver.address.trim() : null) ||
+              (rProfile.organizationAddress && !['87 Elm Street, Downtown, CA 90210', 'Receiver Address', 'Indore'].includes(rProfile.organizationAddress.trim())
+                ? rProfile.organizationAddress.trim()
+                : null) ||
+              rProfile.dropoffAddress ||
+              rProfile.organizationAddress ||
+              ''
+            if (realReceiverAddr) {
+              doc.dropoffAddress = realReceiverAddr
+              if (doc._id) {
+                Exchange.updateOne({ _id: doc._id }, { $set: { dropoffAddress: realReceiverAddr } }).catch(() => {})
+              }
+            }
+          }
+          if (!doc.dropoffAddress || ['Receiver Address', 'Receiver Delivery Address', 'Indore'].includes(doc.dropoffAddress.trim())) {
+            if (doc.receiver?.address) {
+              doc.dropoffAddress = doc.receiver.address
             }
           }
         }
-        if (!doc.dropoffAddress || ['Receiver Address', 'Receiver Delivery Address', 'Indore'].includes(doc.dropoffAddress.trim())) {
-          if (doc.receiver?.address) {
-            doc.dropoffAddress = doc.receiver.address
+        // Auto-resolve missing coordinates dynamically
+        if ((!doc.pickupCoords || doc.pickupCoords.lat == null) && doc.pickupAddress) {
+          const geoP = await geocodeAddress(doc.pickupAddress)
+          if (geoP) doc.pickupCoords = { lat: geoP.lat, lng: geoP.lng }
+        }
+        if ((!doc.dropoffCoords || doc.dropoffCoords.lat == null) && doc.dropoffAddress) {
+          const geoD = await geocodeAddress(doc.dropoffAddress)
+          if (geoD) doc.dropoffCoords = { lat: geoD.lat, lng: geoD.lng }
+        }
+
+        if (!doc.distance && doc.pickupCoords?.lat != null && doc.dropoffCoords?.lat != null) {
+          const taskTransport =
+            doc.transportType ||
+            doc.volunteerInfo?.transportType ||
+            volunteerProfile?.transportType ||
+            'car'
+          try {
+            const km = await calculateRoadDistanceKm(
+              doc.pickupCoords.lat,
+              doc.pickupCoords.lng,
+              doc.dropoffCoords.lat,
+              doc.dropoffCoords.lng,
+              taskTransport
+            )
+            if (km) doc.distance = `${km} km`
+          } catch {
+            const hDist = calculateDistanceKm(
+              doc.pickupCoords.lat,
+              doc.pickupCoords.lng,
+              doc.dropoffCoords.lat,
+              doc.dropoffCoords.lng
+            )
+            if (hDist) doc.distance = `${hDist} km`
           }
         }
+        return doc
+      } catch (itemErr) {
+        console.warn('Error hydrating volunteer delivery item:', itemErr.message)
+        const safeDoc = d.toObject ? d.toObject() : { ...d }
+        delete safeDoc.pickupCode
+        delete safeDoc.deliveryCode
+        return safeDoc
       }
-      // Auto-resolve missing coordinates dynamically
-      if ((!doc.pickupCoords || doc.pickupCoords.lat == null) && doc.pickupAddress) {
-        const geoP = await geocodeAddress(doc.pickupAddress)
-        if (geoP) doc.pickupCoords = { lat: geoP.lat, lng: geoP.lng }
-      }
-      if ((!doc.dropoffCoords || doc.dropoffCoords.lat == null) && doc.dropoffAddress) {
-        const geoD = await geocodeAddress(doc.dropoffAddress)
-        if (geoD) doc.dropoffCoords = { lat: geoD.lat, lng: geoD.lng }
-      }
-
-      if (!doc.distance && doc.pickupCoords?.lat != null && doc.dropoffCoords?.lat != null) {
-        const taskTransport =
-          doc.transportType ||
-          doc.volunteerInfo?.transportType ||
-          volunteerProfile?.transportType ||
-          'car'
-        try {
-          const km = await calculateRoadDistanceKm(
-            doc.pickupCoords.lat,
-            doc.pickupCoords.lng,
-            doc.dropoffCoords.lat,
-            doc.dropoffCoords.lng,
-            taskTransport
-          )
-          if (km) doc.distance = `${km} km`
-        } catch {
-          const hDist = calculateDistanceKm(
-            doc.pickupCoords.lat,
-            doc.pickupCoords.lng,
-            doc.dropoffCoords.lat,
-            doc.dropoffCoords.lng
-          )
-          if (hDist) doc.distance = `${hDist} km`
-        }
-      }
-      return doc
     })
   )
 

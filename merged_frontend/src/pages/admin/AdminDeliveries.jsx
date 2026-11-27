@@ -503,11 +503,6 @@ export default function AdminDeliveries() {
                 <span className="font-bold text-emerald-600">Successfully Confirmed</span>
               </div>
             </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Status:</span>
-                <span className="font-bold text-emerald-600">Successfully Confirmed</span>
-              </div>
-            </div>
 
             <div className="mt-6">
               <button
