@@ -436,13 +436,19 @@ export const listPendingVolunteers = asyncHandler(async (req, res) => {
 })
 
 // PATCH /api/volunteers/:id/approve — admin-only: approve a volunteer's registration
-// :id refers to the VolunteerProfile _id
+// :id refers to the VolunteerProfile _id or User _id
 export const approveVolunteer = asyncHandler(async (req, res) => {
-  const profile = await VolunteerProfile.findById(req.params.id)
+  let profile = await VolunteerProfile.findById(req.params.id)
+  if (!profile && mongoose.Types.ObjectId.isValid(req.params.id)) {
+    profile = await VolunteerProfile.findOne({ user: req.params.id })
+  }
   if (!profile) throw new ApiError(404, 'Volunteer profile not found.')
 
   if (profile.reviewStatus === 'approved') {
-    throw new ApiError(409, 'This volunteer has already been approved.')
+    const user = profile.user ? await User.findById(profile.user) : null
+    return res
+      .status(200)
+      .json(new ApiResponse(200, { profile, user: user?.toSafeObject ? user.toSafeObject() : user }, 'Volunteer is already approved.'))
   }
 
   profile.reviewStatus = 'approved'
@@ -451,38 +457,40 @@ export const approveVolunteer = asyncHandler(async (req, res) => {
   profile.rejectionReason = null
   await profile.save()
 
-  const user = await User.findByIdAndUpdate(profile.user, { status: 'active' }, { new: true })
-
-  // TODO: send an approval email/notification once an email service is wired up.
+  const user = profile.user ? await User.findByIdAndUpdate(profile.user, { status: 'active' }, { new: true }) : null
 
   return res
     .status(200)
-    .json(new ApiResponse(200, { profile, user: user?.toSafeObject() }, 'Volunteer approved successfully.'))
+    .json(new ApiResponse(200, { profile, user: user?.toSafeObject ? user.toSafeObject() : user }, 'Volunteer approved successfully.'))
 })
 
 // PATCH /api/volunteers/:id/reject — admin-only: reject a volunteer's registration
 // Body: { reason?: string }
 export const rejectVolunteer = asyncHandler(async (req, res) => {
-  const profile = await VolunteerProfile.findById(req.params.id)
+  let profile = await VolunteerProfile.findById(req.params.id)
+  if (!profile && mongoose.Types.ObjectId.isValid(req.params.id)) {
+    profile = await VolunteerProfile.findOne({ user: req.params.id })
+  }
   if (!profile) throw new ApiError(404, 'Volunteer profile not found.')
 
   if (profile.reviewStatus === 'rejected') {
-    throw new ApiError(409, 'This volunteer has already been rejected.')
+    const user = profile.user ? await User.findById(profile.user) : null
+    return res
+      .status(200)
+      .json(new ApiResponse(200, { profile, user: user?.toSafeObject ? user.toSafeObject() : user }, 'Volunteer is already rejected.'))
   }
 
   profile.reviewStatus = 'rejected'
   profile.reviewedBy = req.user._id
   profile.reviewedAt = new Date()
-  profile.rejectionReason = req.body.reason || 'Did not meet verification requirements.'
+  profile.rejectionReason = req.body?.reason || 'Did not meet verification criteria.'
   await profile.save()
 
-  const user = await User.findByIdAndUpdate(profile.user, { status: 'rejected' }, { new: true })
-
-  // TODO: send a rejection email/notification once an email service is wired up.
+  const user = profile.user ? await User.findByIdAndUpdate(profile.user, { status: 'rejected' }, { new: true }) : null
 
   return res
     .status(200)
-    .json(new ApiResponse(200, { profile, user: user?.toSafeObject() }, 'Volunteer rejected.'))
+    .json(new ApiResponse(200, { profile, user: user?.toSafeObject ? user.toSafeObject() : user }, 'Volunteer rejected.'))
 })
 
 // Helper to compute Haversine distance in km

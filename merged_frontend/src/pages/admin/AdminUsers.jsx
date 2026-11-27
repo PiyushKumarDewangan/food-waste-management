@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Users,
   Search,
@@ -14,19 +14,51 @@ import {
   ShieldAlert,
   UserCheck,
 } from 'lucide-react'
-import { MOCK_USERS } from '../../services/adminService'
+import { adminService, MOCK_USERS } from '../../services/adminService'
 
 export default function AdminUsers() {
   const [usersList, setUsersList] = useState(MOCK_USERS)
+  const [counts, setCounts] = useState({ total: 0, donors: 0, receivers: 0, volunteers: 0, suspended: 0 })
   const [roleFilter, setRoleFilter] = useState('all') // 'all' | 'donor' | 'receiver' | 'volunteer'
   const [statusFilter, setStatusFilter] = useState('all') // 'all' | 'active' | 'suspended'
   const [searchQuery, setSearchQuery] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
   const [editingUser, setEditingUser] = useState(null)
+  const [editName, setEditName] = useState('')
+  const [editPhone, setEditPhone] = useState('')
+  const [editCity, setEditCity] = useState('')
   const [editStatus, setEditStatus] = useState('Active')
   const [editNotes, setEditNotes] = useState('')
   const [toastMessage, setToastMessage] = useState(null)
   const [activeMenuId, setActiveMenuId] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  const loadUsers = async () => {
+    try {
+      setLoading(true)
+      const data = await adminService.getUsers({
+        role: roleFilter,
+        status: statusFilter,
+        search: searchQuery
+      })
+      if (data) {
+        if (Array.isArray(data.users)) {
+          setUsersList(data.users)
+        }
+        if (data.counts) {
+          setCounts(data.counts)
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to load users:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadUsers()
+  }, [roleFilter, statusFilter, searchQuery])
 
   // Filter users
   const filteredUsers = usersList.filter((u) => {
@@ -37,8 +69,9 @@ export default function AdminUsers() {
       const q = searchQuery.toLowerCase()
       return (
         u.name.toLowerCase().includes(q) ||
-        u.email.toLowerCase().includes(q) ||
-        u.city.toLowerCase().includes(q)
+        (u.email && u.email.toLowerCase().includes(q)) ||
+        (u.city && u.city.toLowerCase().includes(q)) ||
+        (u.phone && u.phone.toLowerCase().includes(q))
       )
     }
     return true
@@ -72,23 +105,46 @@ export default function AdminUsers() {
   }
 
   // Toggle user suspension
-  const handleToggleStatus = (user) => {
-    const nextStatus = user.status === 'Active' ? 'Suspended' : 'Active'
-    setUsersList((prev) =>
-      prev.map((u) => (u.id === user.id ? { ...u, status: nextStatus } : u))
-    )
+  const handleToggleStatus = async (user) => {
+    const nextStatus = user.status.toLowerCase() === 'active' ? 'suspended' : 'active'
+    try {
+      await adminService.toggleUserStatus(user.id, nextStatus)
+      setToastMessage(`✓ ${user.name} status updated to ${nextStatus === 'active' ? 'Active' : 'Suspended'}`)
+      loadUsers()
+    } catch (err) {
+      setToastMessage(`Failed to update status: ${err.message}`)
+    }
     setActiveMenuId(null)
-    setToastMessage(`✓ ${user.name} status updated to ${nextStatus}`)
     setTimeout(() => setToastMessage(null), 3000)
   }
 
+  // Open Edit modal
+  const openEditModal = (user) => {
+    setEditingUser(user)
+    setEditName(user.name || '')
+    setEditPhone(user.phone || '')
+    setEditCity(user.city || '')
+    setEditStatus(user.status || 'Active')
+    setEditNotes('')
+  }
+
   // Save Edit modal
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (!editingUser) return
-    setUsersList((prev) =>
-      prev.map((u) => (u.id === editingUser.id ? { ...u, status: editStatus } : u))
-    )
-    setToastMessage(`✓ Account settings for ${editingUser.name} saved!`)
+    try {
+      if (editingUser.status !== editStatus) {
+        await adminService.toggleUserStatus(editingUser.id, editStatus.toLowerCase())
+      }
+      await adminService.updateUserDetails(editingUser.id, {
+        fullName: editName,
+        phone: editPhone,
+        city: editCity
+      })
+      setToastMessage(`✓ Account settings for ${editName} saved!`)
+      loadUsers()
+    } catch (err) {
+      setToastMessage(`Failed to update user: ${err.message}`)
+    }
     setEditingUser(null)
     setTimeout(() => setToastMessage(null), 3000)
   }
@@ -110,25 +166,25 @@ export default function AdminUsers() {
         <div className="flex items-center space-x-2">
           <span className="w-2.5 h-2.5 rounded-full bg-[#2E7D32]" />
           <span className="text-xs text-gray-600 font-medium">Total Donors</span>
-          <span className="text-sm font-bold text-gray-900 ml-1">420</span>
+          <span className="text-sm font-bold text-gray-900 ml-1">{counts.donors || 0}</span>
         </div>
 
         <div className="flex items-center space-x-2">
           <span className="w-2.5 h-2.5 rounded-full bg-[#1565C0]" />
           <span className="text-xs text-gray-600 font-medium">Total Receivers</span>
-          <span className="text-sm font-bold text-gray-900 ml-1">310</span>
+          <span className="text-sm font-bold text-gray-900 ml-1">{counts.receivers || 0}</span>
         </div>
 
         <div className="flex items-center space-x-2">
           <span className="w-2.5 h-2.5 rounded-full bg-[#FFB74D]" />
           <span className="text-xs text-gray-600 font-medium">Total Volunteers</span>
-          <span className="text-sm font-bold text-gray-900 ml-1">518</span>
+          <span className="text-sm font-bold text-gray-900 ml-1">{counts.volunteers || 0}</span>
         </div>
 
         <div className="flex items-center space-x-2">
           <span className="w-2.5 h-2.5 rounded-full bg-red-500" />
           <span className="text-xs text-gray-600 font-medium">Suspended / Flagged</span>
-          <span className="text-sm font-bold text-gray-900 ml-1">8</span>
+          <span className="text-sm font-bold text-gray-900 ml-1">{counts.suspended || 0}</span>
         </div>
       </div>
 
@@ -144,7 +200,7 @@ export default function AdminUsers() {
                 : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'
             }`}
           >
-            All Users (1,248)
+            All Users ({counts.total || usersList.length})
           </button>
           <button
             onClick={() => setRoleFilter('donor')}
@@ -154,7 +210,7 @@ export default function AdminUsers() {
                 : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'
             }`}
           >
-            Donors
+            Donors ({counts.donors || 0})
           </button>
           <button
             onClick={() => setRoleFilter('receiver')}
@@ -164,7 +220,7 @@ export default function AdminUsers() {
                 : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'
             }`}
           >
-            Receivers (NGOs)
+            Receivers ({counts.receivers || 0})
           </button>
           <button
             onClick={() => setRoleFilter('volunteer')}
@@ -174,7 +230,7 @@ export default function AdminUsers() {
                 : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'
             }`}
           >
-            Volunteers
+            Volunteers ({counts.volunteers || 0})
           </button>
         </div>
 
@@ -287,10 +343,7 @@ export default function AdminUsers() {
                     <td className="py-3.5 px-4 text-right relative">
                       <div className="inline-flex items-center space-x-2">
                         <button
-                          onClick={() => {
-                            setEditingUser(user)
-                            setEditStatus(user.status)
-                          }}
+                          onClick={() => openEditModal(user)}
                           className="text-[#2E7D32] hover:underline font-semibold text-xs"
                         >
                           Edit
@@ -409,13 +462,41 @@ export default function AdminUsers() {
 
             <div className="mt-4 space-y-3.5">
               <div>
-                <label className="text-xs font-bold text-gray-500">Name</label>
-                <p className="text-sm font-bold text-gray-900 mt-0.5">{editingUser.name}</p>
+                <label className="text-xs font-bold text-gray-500">Full Name</label>
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="mt-1 w-full p-2.5 rounded-xl border border-gray-200 text-xs font-semibold text-gray-800 focus:ring-2 focus:ring-[#2E7D32] outline-none"
+                />
               </div>
 
               <div>
-                <label className="text-xs font-bold text-gray-500">Email Address</label>
-                <p className="text-xs font-medium text-gray-600 mt-0.5">{editingUser.email}</p>
+                <label className="text-xs font-bold text-gray-500">Email Address (Read-only)</label>
+                <p className="text-xs font-medium text-gray-500 mt-0.5 bg-gray-50 p-2 rounded-lg border border-gray-100">{editingUser.email}</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-bold text-gray-500">Phone</label>
+                  <input
+                    type="text"
+                    value={editPhone}
+                    onChange={(e) => setEditPhone(e.target.value)}
+                    placeholder="+91..."
+                    className="mt-1 w-full p-2.5 rounded-xl border border-gray-200 text-xs font-semibold text-gray-800 focus:ring-2 focus:ring-[#2E7D32] outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-gray-500">City / Area</label>
+                  <input
+                    type="text"
+                    value={editCity}
+                    onChange={(e) => setEditCity(e.target.value)}
+                    placeholder="e.g. Mumbai, MH"
+                    className="mt-1 w-full p-2.5 rounded-xl border border-gray-200 text-xs font-semibold text-gray-800 focus:ring-2 focus:ring-[#2E7D32] outline-none"
+                  />
+                </div>
               </div>
 
               <div>
@@ -423,7 +504,7 @@ export default function AdminUsers() {
                 <select
                   value={editStatus}
                   onChange={(e) => setEditStatus(e.target.value)}
-                  className="mt-1 w-full p-2.5 rounded-xl border border-gray-200 text-xs font-semibold text-gray-800 focus:ring-2 focus:ring-[#2E7D32] outline-none"
+                  className="mt-1 w-full p-2.5 rounded-xl border border-gray-200 text-xs font-semibold text-gray-800 focus:ring-2 focus:ring-[#2E7D32] outline-none cursor-pointer"
                 >
                   <option value="Active">Active</option>
                   <option value="Suspended">Suspended</option>

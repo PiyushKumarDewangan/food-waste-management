@@ -15,32 +15,57 @@ import {
   X,
   FileText,
   TrendingUp,
+  ExternalLink,
+  CheckCircle2,
 } from 'lucide-react'
 import { adminService, MOCK_PENDING_APPLICATIONS } from '../../services/adminService'
 
 export default function AdminDashboard() {
   const navigate = useNavigate()
 
-  const [pendingList, setPendingList] = useState(MOCK_PENDING_APPLICATIONS.slice(0, 3))
+  const [kpis, setKpis] = useState({
+    totalUsers: 0,
+    donorsCount: 0,
+    receiversCount: 0,
+    volunteersCount: 0,
+    suspendedUsersCount: 0,
+    pendingVerifications: 0,
+    activeFoodListings: 0,
+    completedExchanges: 0,
+  })
+  const [pendingList, setPendingList] = useState([])
+  const [monthlyTrends, setMonthlyTrends] = useState([])
+  const [categoryBreakdown, setCategoryBreakdown] = useState([])
+  const [urgentAlerts, setUrgentAlerts] = useState([])
+  const [loading, setLoading] = useState(true)
+
   const [trendPeriod, setTrendPeriod] = useState('monthly')
   const [selectedProof, setSelectedProof] = useState(null)
   const [rejectingItem, setRejectingItem] = useState(null)
   const [rejectReason, setRejectReason] = useState('')
   const [toastMessage, setToastMessage] = useState(null)
 
-  // Fetch real pending applications if available from backend
-  useEffect(() => {
-    async function loadData() {
-      try {
-        const apps = await adminService.getAllPendingApplications()
-        if (apps && apps.length > 0) {
-          setPendingList(apps.slice(0, 3))
-        }
-      } catch {
-        // Keeps mock data
+  // Fetch real platform metrics & applications from backend
+  const loadDashboardData = async () => {
+    try {
+      setLoading(true)
+      const data = await adminService.getDashboard()
+      if (data) {
+        if (data.kpis) setKpis(data.kpis)
+        if (data.pendingApplications) setPendingList(data.pendingApplications)
+        if (data.monthlyTrends) setMonthlyTrends(data.monthlyTrends)
+        if (data.categoryBreakdown) setCategoryBreakdown(data.categoryBreakdown)
+        if (Array.isArray(data.urgentAlerts)) setUrgentAlerts(data.urgentAlerts)
       }
+    } catch (err) {
+      console.warn('Failed to load live dashboard:', err)
+    } finally {
+      setLoading(false)
     }
-    loadData()
+  }
+
+  useEffect(() => {
+    loadDashboardData()
   }, [])
 
   const handleApprove = async (id, name, role) => {
@@ -50,11 +75,12 @@ export default function AdminDashboard() {
       } else {
         await adminService.approveVolunteer(id)
       }
-    } catch {
-      // optimistic
+      setToastMessage(`✓ ${name} has been successfully approved!`)
+      loadDashboardData()
+    } catch (err) {
+      setToastMessage(`Failed to approve: ${err.message}`)
     }
     setPendingList((prev) => prev.filter((item) => item._id !== id))
-    setToastMessage(`✓ ${name} has been successfully approved!`)
     setTimeout(() => setToastMessage(null), 3000)
   }
 
@@ -66,11 +92,12 @@ export default function AdminDashboard() {
       } else {
         await adminService.rejectVolunteer(rejectingItem._id, rejectReason)
       }
-    } catch {
-      // optimistic
+      setToastMessage(`Application for ${rejectingItem.organizationName} was rejected.`)
+      loadDashboardData()
+    } catch (err) {
+      setToastMessage(`Failed to reject: ${err.message}`)
     }
     setPendingList((prev) => prev.filter((item) => item._id !== rejectingItem._id))
-    setToastMessage(`Application for ${rejectingItem.organizationName} was rejected.`)
     setRejectingItem(null)
     setRejectReason('')
     setTimeout(() => setToastMessage(null), 3000)
@@ -91,11 +118,10 @@ export default function AdminDashboard() {
             </div>
           </div>
           <div className="mt-3">
-            <h2 className="text-3xl font-extrabold text-[#1F2937] tracking-tight">1,248</h2>
+            <h2 className="text-3xl font-extrabold text-[#1F2937] tracking-tight">{kpis.totalUsers}</h2>
             <div className="flex items-center space-x-1.5 mt-2">
-              <span className="inline-flex items-center text-xs font-bold text-[#2E7D32]">
-                <TrendingUp className="w-3.5 h-3.5 mr-0.5" />
-                +12% this month
+              <span className="inline-flex items-center text-xs font-medium text-gray-500">
+                {kpis.donorsCount} Donors · {kpis.receiversCount} Recv · {kpis.volunteersCount} Vol
               </span>
             </div>
           </div>
@@ -112,9 +138,9 @@ export default function AdminDashboard() {
             </div>
           </div>
           <div className="mt-3">
-            <h2 className="text-3xl font-extrabold text-[#1F2937] tracking-tight">14</h2>
+            <h2 className="text-3xl font-extrabold text-[#1F2937] tracking-tight">{kpis.pendingVerifications}</h2>
             <p className="text-xs font-semibold text-amber-700/90 mt-2">
-              8 Receivers, 6 Volunteers
+              Requires admin credential review
             </p>
           </div>
         </div>
@@ -130,7 +156,7 @@ export default function AdminDashboard() {
             </div>
           </div>
           <div className="mt-3">
-            <h2 className="text-3xl font-extrabold text-[#1F2937] tracking-tight">86</h2>
+            <h2 className="text-3xl font-extrabold text-[#1F2937] tracking-tight">{kpis.activeFoodListings}</h2>
             <p className="text-xs font-medium text-gray-500 mt-2">Available for pickup</p>
           </div>
         </div>
@@ -146,8 +172,8 @@ export default function AdminDashboard() {
             </div>
           </div>
           <div className="mt-3">
-            <h2 className="text-3xl font-extrabold text-[#1F2937] tracking-tight">3,410</h2>
-            <p className="text-xs font-medium text-gray-500 mt-2">Over 12,800 meals shared</p>
+            <h2 className="text-3xl font-extrabold text-[#1F2937] tracking-tight">{kpis.completedExchanges}</h2>
+            <p className="text-xs font-medium text-gray-500 mt-2">Completed food rescues</p>
           </div>
         </div>
       </div>
@@ -160,7 +186,7 @@ export default function AdminDashboard() {
               Pending Account Verifications
             </h3>
             <span className="bg-amber-100 text-amber-800 text-xs font-extrabold px-3 py-1 rounded-full">
-              Action Needed (14)
+              Action Needed ({kpis.pendingVerifications})
             </span>
           </div>
 
@@ -303,7 +329,7 @@ export default function AdminDashboard() {
 
               <div className="inline-flex items-center space-x-1.5 bg-emerald-50 text-[#2E7D32] px-3 py-1 rounded-full text-xs font-bold">
                 <Leaf className="w-3.5 h-3.5" />
-                <span>420 kg rescued this week</span>
+                <span>{kpis.totalDivertedKg ? `${kpis.totalDivertedKg} kg rescued across platform` : '420 kg rescued this week'}</span>
               </div>
             </div>
 
@@ -379,67 +405,41 @@ export default function AdminDashboard() {
             </div>
             <p className="text-xs text-gray-500 mb-5">Items needing attention</p>
 
-            <div className="space-y-4">
-              {/* Alert 1 */}
-              <div className="p-3.5 bg-amber-50/70 rounded-xl border border-amber-200/80">
-                <div className="flex items-start space-x-2.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-amber-500 mt-1 shrink-0" />
-                  <div>
-                    <h4 className="text-xs font-bold text-gray-900 leading-snug">
-                      3 Food Listings Expiring in &lt; 2 Hours
-                    </h4>
-                    <button
-                      onClick={() => navigate('/admin/food')}
-                      className="text-xs font-semibold text-[#2E7D32] hover:underline mt-1.5 flex items-center space-x-1"
-                    >
-                      <span>Review Listings</span>
-                      <ChevronRight className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+            <div className="space-y-3.5">
+              {urgentAlerts.length === 0 ? (
+                <div className="p-4 bg-emerald-50/70 rounded-xl border border-emerald-200/80 text-center">
+                  <CheckCircle2 className="w-5 h-5 text-[#2E7D32] mx-auto mb-1.5" />
+                  <h4 className="text-xs font-bold text-gray-900">All Systems On Schedule</h4>
+                  <p className="text-[11px] text-gray-500 mt-0.5">
+                    No critical food expirations, unassigned orders, or pending disputes.
+                  </p>
                 </div>
-              </div>
-
-              {/* Alert 2 */}
-              <div className="p-3.5 bg-orange-50/70 rounded-xl border border-orange-200/80">
-                <div className="flex items-start space-x-2.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-[#E65100] mt-1 shrink-0" />
-                  <div>
-                    <h4 className="text-xs font-bold text-gray-900 leading-snug">
-                      1 Unassigned Urgent Pickup
-                    </h4>
-                    <button
-                      onClick={() => navigate('/admin/deliveries')}
-                      className="text-xs font-semibold text-[#2E7D32] hover:underline mt-1.5 flex items-center space-x-1"
-                    >
-                      <span>Assign Volunteer</span>
-                      <ChevronRight className="w-3.5 h-3.5" />
-                    </button>
+              ) : (
+                urgentAlerts.map((alert) => (
+                  <div
+                    key={alert.id}
+                    className={`p-3.5 rounded-xl border ${alert.bgColor || 'bg-amber-50/70 border-amber-200/80'}`}
+                  >
+                    <div className="flex items-start space-x-2.5">
+                      <span
+                        className={`w-2.5 h-2.5 rounded-full mt-1 shrink-0 ${alert.dotColor || 'bg-amber-500'}`}
+                      />
+                      <div className="flex-1">
+                        <h4 className="text-xs font-bold text-gray-900 leading-snug">{alert.title}</h4>
+                        {alert.link && (
+                          <button
+                            onClick={() => navigate(alert.link)}
+                            className="text-xs font-semibold text-[#2E7D32] hover:underline mt-1.5 flex items-center space-x-1"
+                          >
+                            <span>{alert.actionText || 'Take Action'}</span>
+                            <ChevronRight className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-
-              {/* Alert 3 */}
-              <div className="p-3.5 bg-red-50/70 rounded-xl border border-red-200/80">
-                <div className="flex items-start space-x-2.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-red-500 mt-1 shrink-0" />
-                  <div>
-                    <h4 className="text-xs font-bold text-gray-900 leading-snug">
-                      1 Reported Quality Issue
-                    </h4>
-                    <button
-                      onClick={() =>
-                        setToastMessage(
-                          'Dispute #DIS-882 opened: Donor packaged soup mismatch. Investigating.'
-                        )
-                      }
-                      className="text-xs font-semibold text-red-600 hover:underline mt-1.5 flex items-center space-x-1"
-                    >
-                      <span>Review Dispute</span>
-                      <ChevronRight className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              </div>
+                ))
+              )}
             </div>
           </div>
 
@@ -483,6 +483,19 @@ export default function AdminDashboard() {
               <div className="mt-4 inline-block bg-white px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold text-gray-700">
                 Official Seal: {selectedProof.documentDetails?.verifiedStamp || 'VERIFIED'}
               </div>
+              {selectedProof.documentUrl && (
+                <div className="mt-3">
+                  <a
+                    href={selectedProof.documentUrl.startsWith('http') ? selectedProof.documentUrl : `http://localhost:5000${selectedProof.documentUrl}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-50 text-[#2E7D32] border border-emerald-200 rounded-lg text-xs font-bold hover:bg-emerald-100 transition-colors"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>View Submitted Verification File</span>
+                  </a>
+                </div>
+              )}
             </div>
 
             <div className="mt-4">

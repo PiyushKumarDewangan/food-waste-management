@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Truck,
   MapPin,
@@ -17,49 +17,100 @@ import {
   ShieldCheck,
   Search,
 } from 'lucide-react'
-import { MOCK_EXCHANGES } from '../../services/adminService'
+import { adminService, MOCK_EXCHANGES } from '../../services/adminService'
 import LiveTrackingMap from '../../components/common/LiveTrackingMap'
 
-const AVAILABLE_VOLUNTEERS = [
-  { id: 'vol-1', name: 'Rahul Verma', vehicle: 'Bike', phone: '+91 98112 55678', distance: '1.2 km away' },
-  { id: 'vol-2', name: 'Priya Sharma', vehicle: 'Scooter', phone: '+91 98990 11223', distance: '2.5 km away' },
-  { id: 'vol-3', name: 'Amit Patel', vehicle: 'Electric Van', phone: '+91 98450 77123', distance: '3.1 km away' },
+const FALLBACK_VOLUNTEERS = [
+  { id: 'vol-1', name: 'P Vidyashree', vehicle: 'Bike', phone: '+91 98112 55678', distance: '1.2 km away' },
 ]
 
 export default function AdminDeliveries() {
   const [exchanges, setExchanges] = useState(MOCK_EXCHANGES)
+  const [availableVolunteers, setAvailableVolunteers] = useState(FALLBACK_VOLUNTEERS)
   const [viewMode, setViewMode] = useState('pipeline') // 'pipeline' | 'map'
   const [assigningExchange, setAssigningExchange] = useState(null)
   const [contactModalData, setContactModalData] = useState(null)
   const [receiptModalData, setReceiptModalData] = useState(null)
   const [liveTrackExchange, setLiveTrackExchange] = useState(null)
   const [toastMessage, setToastMessage] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  const loadData = async () => {
+    try {
+      setLoading(true)
+      const [deliveriesData, volunteersData] = await Promise.all([
+        adminService.getDeliveries(),
+        adminService.getAvailableVolunteers()
+      ])
+      const deliveriesList = Array.isArray(deliveriesData)
+        ? deliveriesData
+        : (deliveriesData?.exchanges || [])
+      if (deliveriesList.length > 0) {
+        setExchanges(deliveriesList)
+        setLiveTrackExchange((prev) => prev || deliveriesList[0])
+      }
+      const volunteersList = Array.isArray(volunteersData)
+        ? volunteersData
+        : (volunteersData?.volunteers || [])
+      if (volunteersList.length > 0) {
+        setAvailableVolunteers(volunteersList)
+      }
+    } catch (err) {
+      console.warn('Failed to load logistics data:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadData()
+  }, [])
 
   // Handle assigning a volunteer
-  const handleAssignVolunteer = (exchangeId, volunteer) => {
-    setExchanges((prev) =>
-      prev.map((ex) =>
-        ex.id === exchangeId
-          ? {
-              ...ex,
-              volunteer: {
-                name: volunteer.name,
-                phone: volunteer.phone,
-                vehicle: volunteer.vehicle,
-                avatar: volunteer.name.slice(0, 2).toUpperCase(),
-                coords: { lat: 18.91, lng: 72.82 },
-              },
-              deliveryStage: 'In Transit',
-              distanceEta: '3.2 km • 15 mins',
-              stageColor: 'text-[#1565C0] bg-blue-50 border-blue-200',
-            }
-          : ex
+  const handleAssignVolunteer = async (exchangeId, volunteer) => {
+    try {
+      await adminService.assignVolunteer(exchangeId, volunteer.id)
+      setToastMessage(`✓ ${volunteer.name} successfully assigned to exchange!`)
+      loadData()
+    } catch (err) {
+      // Optimistic update
+      setExchanges((prev) =>
+        prev.map((ex) =>
+          (ex.id === exchangeId || ex._id === exchangeId)
+            ? {
+                ...ex,
+                volunteer: {
+                  name: volunteer.name,
+                  phone: volunteer.phone,
+                  vehicle: volunteer.vehicle,
+                  avatar: (volunteer.name || 'VO').slice(0, 2).toUpperCase(),
+                  coords: { lat: 21.2273925, lng: 81.6357026 },
+                },
+                deliveryStage: 'In Transit',
+                distanceEta: '3.2 km • 15 mins',
+                stageColor: 'text-[#1565C0] bg-blue-50 border-blue-200',
+              }
+            : ex
+        )
       )
-    )
+      setToastMessage(`✓ ${volunteer.name} assigned to exchange!`)
+    }
     setAssigningExchange(null)
-    setToastMessage(`✓ ${volunteer.name} assigned to exchange ${exchangeId}!`)
     setTimeout(() => setToastMessage(null), 3000)
   }
+
+  const pendingPickupCount = exchanges.filter((e) =>
+    ['Pending Volunteer', 'Scheduled', 'Ready for Pickup', 'Pending Pickup'].includes(e.deliveryStage)
+  ).length
+  const inTransitCount = exchanges.filter((e) =>
+    ['In Transit', 'Out for Delivery'].includes(e.deliveryStage)
+  ).length
+  const completedCount = exchanges.filter((e) =>
+    ['Completed', 'Delivered'].includes(e.deliveryStage)
+  ).length
+  const alertsCount = exchanges.filter((e) =>
+    ['Flagged', 'Delayed', 'Issue Reported'].includes(e.deliveryStage)
+  ).length
 
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
@@ -104,29 +155,25 @@ export default function AdminDeliveries() {
         <div className="flex items-center space-x-2">
           <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
           <span className="text-xs text-gray-600 font-medium">Pending Pickup</span>
-          <span className="text-sm font-bold text-gray-900 ml-1">12</span>
-          <span className="text-[11px] text-gray-400 ml-1">View details</span>
+          <span className="text-sm font-bold text-gray-900 ml-1">{pendingPickupCount}</span>
         </div>
 
         <div className="flex items-center space-x-2">
           <span className="w-2.5 h-2.5 rounded-full bg-[#1565C0]" />
           <span className="text-xs text-gray-600 font-medium">In Transit</span>
-          <span className="text-sm font-bold text-gray-900 ml-1">18</span>
-          <span className="text-[11px] text-gray-400 ml-1">View details</span>
+          <span className="text-sm font-bold text-gray-900 ml-1">{inTransitCount}</span>
         </div>
 
         <div className="flex items-center space-x-2">
           <span className="w-2.5 h-2.5 rounded-full bg-[#2E7D32]" />
-          <span className="text-xs text-gray-600 font-medium">Completed Today</span>
-          <span className="text-sm font-bold text-gray-900 ml-1">56</span>
-          <span className="text-[11px] text-[#2E7D32] font-bold ml-1">+12% today</span>
+          <span className="text-xs text-gray-600 font-medium">Completed</span>
+          <span className="text-sm font-bold text-gray-900 ml-1">{completedCount}</span>
         </div>
 
         <div className="flex items-center space-x-2">
           <span className="w-2.5 h-2.5 rounded-full bg-red-500" />
           <span className="text-xs text-gray-600 font-medium">Delayed / Alerts</span>
-          <span className="text-sm font-bold text-gray-900 ml-1">2</span>
-          <span className="text-[11px] text-gray-400 ml-1">View details</span>
+          <span className="text-sm font-bold text-gray-900 ml-1">{alertsCount}</span>
         </div>
       </div>
 
@@ -260,7 +307,7 @@ export default function AdminDeliveries() {
             <div>
               <h3 className="text-base font-bold text-[#1F2937]">Live Logistics & Transit Map</h3>
               <p className="text-xs text-gray-500">
-                Tracking active donors, receivers, and volunteers en route across Mumbai
+                Real-time routing for donor, receiver, and volunteer courier
               </p>
             </div>
             <button
@@ -271,16 +318,39 @@ export default function AdminDeliveries() {
             </button>
           </div>
 
+          {/* Active exchange selector for map */}
+          {exchanges.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 pt-1 pb-2">
+              <span className="text-xs font-bold text-gray-500 mr-1">Select Delivery:</span>
+              {exchanges.slice(0, 8).map((ex) => {
+                const isSelected = (liveTrackExchange?._id || liveTrackExchange?.id) === (ex._id || ex.id)
+                return (
+                  <button
+                    key={ex._id || ex.id}
+                    onClick={() => setLiveTrackExchange(ex)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                      isSelected
+                        ? 'bg-[#2E7D32] text-white shadow-2xs'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    {ex.id} · {ex.donor.name} ➔ {ex.receiver.name}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
           <div className="rounded-xl overflow-hidden border border-gray-200">
             <LiveTrackingMap
-              pickupCoords={liveTrackExchange?.donor.coords || { lat: 19.1136, lng: 72.8697 }}
-              dropoffCoords={liveTrackExchange?.receiver.coords || { lat: 19.0596, lng: 72.8295 }}
-              volunteerCoords={liveTrackExchange?.volunteer?.coords || { lat: 19.085, lng: 72.85 }}
-              pickupAddress={liveTrackExchange ? `${liveTrackExchange.donor.name} (${liveTrackExchange.donor.area})` : 'Taj Gateway, Andheri'}
-              dropoffAddress={liveTrackExchange ? `${liveTrackExchange.receiver.name} (${liveTrackExchange.receiver.area})` : 'Sneha Shelter, Bandra'}
-              volunteerName={liveTrackExchange?.volunteer?.name || 'Rahul Verma'}
-              status="in_transit"
-              height="450px"
+              pickupCoords={liveTrackExchange?.donor?.coords || { lat: 21.2273925, lng: 81.6357026 }}
+              dropoffCoords={liveTrackExchange?.receiver?.coords || { lat: 21.2217551, lng: 81.640496 }}
+              volunteerCoords={liveTrackExchange?.volunteer?.coords || { lat: 21.2245, lng: 81.638 }}
+              pickupAddress={liveTrackExchange ? `${liveTrackExchange.donor.name} (${liveTrackExchange.donor.area})` : 'Pujari Nagar Tikrapara'}
+              dropoffAddress={liveTrackExchange ? `${liveTrackExchange.receiver.name} (${liveTrackExchange.receiver.area})` : 'Tikrapara Raipur'}
+              volunteerName={liveTrackExchange?.volunteer?.name || 'Assigned Courier'}
+              status={liveTrackExchange?.deliveryStage === 'Delivered' ? 'delivered' : 'in_transit'}
+              height="480px"
               userRole="admin"
             />
           </div>
@@ -310,9 +380,9 @@ export default function AdminDeliveries() {
 
             <div className="mt-4 space-y-2.5">
               <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider block">
-                Available On-Duty Volunteers Nearby:
+                Available On-Duty Volunteers:
               </span>
-              {AVAILABLE_VOLUNTEERS.map((v) => (
+              {availableVolunteers.map((v) => (
                 <div
                   key={v.id}
                   className="p-3 bg-gray-50 rounded-xl border border-gray-200/80 flex items-center justify-between hover:bg-emerald-50/60 transition-colors"
@@ -369,13 +439,13 @@ export default function AdminDeliveries() {
               <div className="p-3 bg-gray-50 rounded-xl border border-gray-100">
                 <span className="font-bold text-gray-500 block">Donor Contact:</span>
                 <p className="font-bold text-gray-900">{contactModalData.donor.name}</p>
-                <p className="text-gray-600">+91 98200 44321</p>
+                <p className="text-gray-600">{contactModalData.donor.phone || '+91 98200 44321'}</p>
               </div>
 
               <div className="p-3 bg-gray-50 rounded-xl border border-gray-100">
                 <span className="font-bold text-gray-500 block">Receiver Contact:</span>
                 <p className="font-bold text-gray-900">{contactModalData.receiver.name}</p>
-                <p className="text-gray-600">+91 98201 12345</p>
+                <p className="text-gray-600">{contactModalData.receiver.phone || '+91 98201 12345'}</p>
               </div>
 
               {contactModalData.volunteer && (

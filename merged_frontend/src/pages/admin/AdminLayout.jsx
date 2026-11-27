@@ -20,45 +20,61 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
 import HelpSupportModal from '../../components/common/HelpSupportModal'
-
-const NAV_ITEMS = [
-  {
-    name: 'Dashboard',
-    to: '/admin/dashboard',
-    icon: LayoutDashboard,
-  },
-  {
-    name: 'Verifications',
-    to: '/admin/verifications',
-    icon: ShieldCheck,
-    badge: '14',
-  },
-  {
-    name: 'User Management',
-    to: '/admin/users',
-    icon: Users,
-  },
-  {
-    name: 'Food Management',
-    to: '/admin/food',
-    icon: UtensilsCrossed,
-  },
-  {
-    name: 'Requests & Deliveries',
-    to: '/admin/deliveries',
-    icon: Truck,
-  },
-  {
-    name: 'Reports & Analytics',
-    to: '/admin/reports',
-    icon: BarChart3,
-  },
-]
+import { adminService } from '../../services/adminService'
 
 export default function AdminLayout() {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
+  const [pendingBadge, setPendingBadge] = useState(null)
+
+  useEffect(() => {
+    async function fetchBadge() {
+      try {
+        const dash = await adminService.getDashboard()
+        if (dash?.kpis?.pendingVerifications !== undefined) {
+          setPendingBadge(dash.kpis.pendingVerifications)
+        }
+      } catch (e) {
+        // quiet
+      }
+    }
+    fetchBadge()
+  }, [location.pathname])
+
+  const NAV_ITEMS = [
+    {
+      name: 'Dashboard',
+      to: '/admin/dashboard',
+      icon: LayoutDashboard,
+    },
+    {
+      name: 'Verifications',
+      to: '/admin/verifications',
+      icon: ShieldCheck,
+      badge: pendingBadge !== null ? (pendingBadge > 0 ? String(pendingBadge) : null) : '...',
+    },
+    {
+      name: 'User Management',
+      to: '/admin/users',
+      icon: Users,
+    },
+    {
+      name: 'Food Management',
+      to: '/admin/food',
+      icon: UtensilsCrossed,
+    },
+    {
+      name: 'Requests & Deliveries',
+      to: '/admin/deliveries',
+      icon: Truck,
+    },
+    {
+      name: 'Reports & Analytics',
+      to: '/admin/reports',
+      icon: BarChart3,
+    },
+  ]
 
   // Sidebar is collapsed by default (opens on clicking the 3-line hamburger menu)
   const [sidebarOpen, setSidebarOpen] = useState(false)

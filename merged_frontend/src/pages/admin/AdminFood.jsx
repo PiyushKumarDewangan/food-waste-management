@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Leaf,
   Scale,
@@ -13,17 +13,47 @@ import {
   MapPin,
   Calendar,
   CheckCircle2,
+  Trash2,
 } from 'lucide-react'
-import { MOCK_FOOD_LISTINGS } from '../../services/adminService'
+import { adminService, MOCK_FOOD_LISTINGS } from '../../services/adminService'
+import { getFoodImageUrl, handleImageError } from '../../utils/imageHelper'
 
 export default function AdminFood() {
   const [foodListings, setFoodListings] = useState(MOCK_FOOD_LISTINGS)
+  const [stats, setStats] = useState({ active: 0, expiringSoon: 0, rescuedTodayKg: 0, totalDivertedKg: 0 })
   const [categoryFilter, setCategoryFilter] = useState('all') // 'all' | 'Cooked Meals' | 'Packaged Groceries' | 'Bakery / Dairy' | 'Fresh Produce'
-  const [vegOnly, setVegOnly] = useState(true)
+  const [vegOnly, setVegOnly] = useState(false)
   const [inspectItem, setInspectItem] = useState(null)
   const [sosModalItem, setSosModalItem] = useState(null)
   const [journeyItem, setJourneyItem] = useState(null)
   const [toastMessage, setToastMessage] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  const loadFoodListings = async () => {
+    try {
+      setLoading(true)
+      const data = await adminService.getFoodListings({
+        category: categoryFilter,
+        vegOnly
+      })
+      if (data) {
+        if (Array.isArray(data.listings)) {
+          setFoodListings(data.listings)
+        }
+        if (data.stats) {
+          setStats(data.stats)
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to load food listings:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadFoodListings()
+  }, [categoryFilter, vegOnly])
 
   // Filter listings
   const filteredListings = foodListings.filter((item) => {
@@ -33,11 +63,30 @@ export default function AdminFood() {
   })
 
   // Handle SOS Broadcast
-  const handleBroadcastSOS = () => {
+  const handleBroadcastSOS = async () => {
     if (!sosModalItem) return
-    setToastMessage(`🚨 Urgent SOS broadcast sent for "${sosModalItem.title}" to 14 nearby NGOs & 22 volunteers!`)
+    try {
+      await adminService.broadcastFoodSOS(sosModalItem.id)
+      setToastMessage(`🚨 Urgent SOS broadcast sent for "${sosModalItem.title}" to nearby NGOs & volunteers!`)
+    } catch (err) {
+      setToastMessage(`Failed to broadcast SOS: ${err.message}`)
+    }
     setSosModalItem(null)
     setTimeout(() => setToastMessage(null), 4000)
+  }
+
+  // Handle Delete Listing
+  const handleDeleteListing = async (listingId, title) => {
+    if (!window.confirm(`Are you sure you want to cancel the listing "${title}"?`)) return
+    try {
+      await adminService.deleteFoodListing(listingId)
+      setToastMessage(`✓ Listing "${title}" was cancelled and removed.`)
+      loadFoodListings()
+    } catch (err) {
+      setToastMessage(`Failed to cancel listing: ${err.message}`)
+    }
+    setInspectItem(null)
+    setTimeout(() => setToastMessage(null), 3000)
   }
 
   return (
@@ -60,7 +109,7 @@ export default function AdminFood() {
             <span className="text-xs font-bold text-gray-400 uppercase tracking-wider block">
               Active Listings
             </span>
-            <h3 className="text-3xl font-extrabold text-[#1F2937] mt-1">86</h3>
+            <h3 className="text-3xl font-extrabold text-[#1F2937] mt-1">{stats.active ?? 0}</h3>
           </div>
           <div className="w-10 h-10 rounded-xl bg-emerald-50 text-[#2E7D32] flex items-center justify-center">
             <Leaf className="w-5 h-5" />
@@ -73,7 +122,7 @@ export default function AdminFood() {
             <span className="text-xs font-bold text-amber-800 uppercase tracking-wider block">
               Expiring Soon (&lt;2h)
             </span>
-            <h3 className="text-3xl font-extrabold text-[#1F2937] mt-1">3</h3>
+            <h3 className="text-3xl font-extrabold text-[#1F2937] mt-1">{stats.expiringSoon ?? 0}</h3>
           </div>
           <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
             <Leaf className="w-5 h-5" />
@@ -86,7 +135,7 @@ export default function AdminFood() {
             <span className="text-xs font-bold text-gray-400 uppercase tracking-wider block">
               Rescued Today
             </span>
-            <h3 className="text-3xl font-extrabold text-[#1F2937] mt-1">140 kg</h3>
+            <h3 className="text-3xl font-extrabold text-[#1F2937] mt-1">{stats.rescuedTodayKg ?? 0} kg</h3>
           </div>
           <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#1565C0] flex items-center justify-center">
             <Leaf className="w-5 h-5" />
@@ -99,7 +148,7 @@ export default function AdminFood() {
             <span className="text-xs font-bold text-gray-400 uppercase tracking-wider block">
               Total Diverted
             </span>
-            <h3 className="text-3xl font-extrabold text-[#1F2937] mt-1">4,850 kg</h3>
+            <h3 className="text-3xl font-extrabold text-[#1F2937] mt-1">{(stats.totalDivertedKg ?? 0).toLocaleString()} kg</h3>
           </div>
           <div className="w-10 h-10 rounded-xl bg-purple-50 text-[#6A1B9A] flex items-center justify-center">
             <Scale className="w-5 h-5" />
@@ -163,8 +212,9 @@ export default function AdminFood() {
             {/* Image Header with Expiry Pill */}
             <div className="relative h-48 w-full bg-gray-100 overflow-hidden">
               <img
-                src={listing.imageUrl}
+                src={getFoodImageUrl(listing.imageUrl, listing.category)}
                 alt={listing.title}
+                onError={(e) => handleImageError(e, listing.category)}
                 className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
               />
               {/* Expiry Pill */}
@@ -257,8 +307,9 @@ export default function AdminFood() {
             <div className="mt-4 space-y-3.5 text-xs">
               <div className="flex items-center space-x-3">
                 <img
-                  src={inspectItem.imageUrl}
+                  src={getFoodImageUrl(inspectItem.imageUrl, inspectItem.category)}
                   alt={inspectItem.title}
+                  onError={(e) => handleImageError(e, inspectItem.category)}
                   className="w-16 h-16 rounded-xl object-cover"
                 />
                 <div>
@@ -299,23 +350,32 @@ export default function AdminFood() {
               </div>
             </div>
 
-            <div className="mt-6 flex items-center justify-end space-x-2">
+            <div className="mt-6 flex items-center justify-between">
               <button
-                onClick={() => setInspectItem(null)}
-                className="px-4 py-2 rounded-xl text-xs font-bold text-gray-600 hover:bg-gray-100"
+                onClick={() => handleDeleteListing(inspectItem.id, inspectItem.title)}
+                className="px-3 py-2 rounded-xl text-xs font-bold text-red-600 hover:bg-red-50 flex items-center space-x-1 transition-colors"
               >
-                Close
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Cancel Listing</span>
               </button>
-              <button
-                onClick={() => {
-                  setToastMessage(`✓ Listing verified & approved for active distribution!`)
-                  setInspectItem(null)
-                  setTimeout(() => setToastMessage(null), 3000)
-                }}
-                className="px-5 py-2 rounded-xl text-xs font-bold bg-[#2E7D32] hover:bg-[#1B5E20] text-white"
-              >
-                Verify & Endorse
-              </button>
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => setInspectItem(null)}
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-gray-600 hover:bg-gray-100"
+                >
+                  Close
+                </button>
+                <button
+                  onClick={() => {
+                    setToastMessage(`✓ Listing verified & approved for active distribution!`)
+                    setInspectItem(null)
+                    setTimeout(() => setToastMessage(null), 3000)
+                  }}
+                  className="px-5 py-2 rounded-xl text-xs font-bold bg-[#2E7D32] hover:bg-[#1B5E20] text-white"
+                >
+                  Verify & Endorse
+                </button>
+              </div>
             </div>
           </div>
         </div>

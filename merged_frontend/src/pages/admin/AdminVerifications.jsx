@@ -16,6 +16,7 @@ import {
   Clock,
   CheckCircle2,
   AlertCircle,
+  ExternalLink,
 } from 'lucide-react'
 import { adminService, MOCK_PENDING_APPLICATIONS } from '../../services/adminService'
 
@@ -23,32 +24,36 @@ export default function AdminVerifications() {
   const [activeTab, setActiveTab] = useState('all') // 'all' | 'receivers' | 'volunteers' | 'approved' | 'rejected'
   const [searchQuery, setSearchQuery] = useState('')
   const [sortBy, setSortBy] = useState('oldest')
-  const [applications, setApplications] = useState(MOCK_PENDING_APPLICATIONS)
-  const [selectedApp, setSelectedApp] = useState(MOCK_PENDING_APPLICATIONS[0])
+  const [applications, setApplications] = useState([])
+  const [selectedApp, setSelectedApp] = useState(null)
   const [zoomLevel, setZoomLevel] = useState(100)
   const [toastMessage, setToastMessage] = useState(null)
   const [rejectingApp, setRejectingApp] = useState(null)
   const [rejectReason, setRejectReason] = useState('')
 
-  useEffect(() => {
-    async function loadData() {
-      try {
-        const data = await adminService.getAllPendingApplications()
-        if (data && data.length > 0) {
-          setApplications(data)
+  const loadData = async () => {
+    try {
+      const data = await adminService.getAllPendingApplications()
+      if (Array.isArray(data)) {
+        setApplications(data)
+        if (!selectedApp && data.length > 0) {
           setSelectedApp(data[0])
         }
-      } catch {
-        // Keeps mock
       }
+    } catch (err) {
+      console.warn('Failed to fetch applications:', err)
     }
+  }
+
+  useEffect(() => {
     loadData()
   }, [])
 
   // Filter applications by tab & search
   const filteredApps = applications.filter((app) => {
-    if (activeTab === 'receivers' && app.role !== 'receiver') return false
-    if (activeTab === 'volunteers' && app.role !== 'volunteer') return false
+    if (activeTab === 'all' && app.reviewStatus !== 'pending') return false
+    if (activeTab === 'receivers' && (app.role !== 'receiver' || app.reviewStatus !== 'pending')) return false
+    if (activeTab === 'volunteers' && (app.role !== 'volunteer' || app.reviewStatus !== 'pending')) return false
     if (activeTab === 'approved' && app.reviewStatus !== 'approved') return false
     if (activeTab === 'rejected' && app.reviewStatus !== 'rejected') return false
 
@@ -70,24 +75,18 @@ export default function AdminVerifications() {
       } else {
         await adminService.approveVolunteer(appToApprove._id)
       }
-    } catch {
-      // optimistic
+      setToastMessage(`✓ ${appToApprove.organizationName || appToApprove.user?.fullName} approved!`)
+      setApplications((prev) =>
+        prev.map((a) => (a._id === appToApprove._id ? { ...a, reviewStatus: 'approved' } : a))
+      )
+      if (selectedApp?._id === appToApprove._id) {
+        setSelectedApp(prev => ({ ...prev, reviewStatus: 'approved' }))
+      }
+      loadData()
+    } catch (err) {
+      setToastMessage(`Failed to approve: ${err.message}`)
     }
-
-    setApplications((prev) =>
-      prev.map((a) => (a._id === appToApprove._id ? { ...a, reviewStatus: 'approved' } : a))
-    )
-
-    setToastMessage(`✓ ${appToApprove.organizationName || appToApprove.user?.fullName} approved!`)
     setTimeout(() => setToastMessage(null), 3000)
-
-    // Select next pending application
-    const remaining = applications.filter(
-      (a) => a._id !== appToApprove._id && a.reviewStatus === 'pending'
-    )
-    if (remaining.length > 0) {
-      setSelectedApp(remaining[0])
-    }
   }
 
   // Handle Reject
@@ -99,15 +98,17 @@ export default function AdminVerifications() {
       } else {
         await adminService.rejectVolunteer(rejectingApp._id, rejectReason)
       }
-    } catch {
-      // optimistic
+      setToastMessage(`Application for ${rejectingApp.organizationName || rejectingApp.user?.fullName} was rejected.`)
+      setApplications((prev) =>
+        prev.map((a) => (a._id === rejectingApp._id ? { ...a, reviewStatus: 'rejected' } : a))
+      )
+      if (selectedApp?._id === rejectingApp._id) {
+        setSelectedApp(prev => ({ ...prev, reviewStatus: 'rejected' }))
+      }
+      loadData()
+    } catch (err) {
+      setToastMessage(`Failed to reject: ${err.message}`)
     }
-
-    setApplications((prev) =>
-      prev.map((a) => (a._id === rejectingApp._id ? { ...a, reviewStatus: 'rejected' } : a))
-    )
-
-    setToastMessage(`Application for ${rejectingApp.organizationName} was rejected.`)
     setRejectingApp(null)
     setRejectReason('')
     setTimeout(() => setToastMessage(null), 3000)
@@ -116,6 +117,12 @@ export default function AdminVerifications() {
   const pendingCount = applications.filter((a) => a.reviewStatus === 'pending').length
   const receiverCount = applications.filter((a) => a.role === 'receiver' && a.reviewStatus === 'pending').length
   const volunteerCount = applications.filter((a) => a.role === 'volunteer' && a.reviewStatus === 'pending').length
+  const approvedCount = applications.filter((a) => a.reviewStatus === 'approved').length
+  const rejectedCount = applications.filter((a) => a.reviewStatus === 'rejected').length
+
+  const activeApp = (selectedApp && filteredApps.some(a => a._id === selectedApp._id))
+    ? selectedApp
+    : (filteredApps.length > 0 ? filteredApps[0] : null)
 
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
@@ -172,7 +179,7 @@ export default function AdminVerifications() {
               : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'
           }`}
         >
-          Approved
+          Approved ({approvedCount})
         </button>
 
         <button
@@ -183,7 +190,7 @@ export default function AdminVerifications() {
               : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'
           }`}
         >
-          Rejected
+          Rejected ({rejectedCount})
         </button>
       </div>
 
@@ -341,10 +348,10 @@ export default function AdminVerifications() {
             <div>
               <h3 className="text-base font-bold text-[#1F2937]">Document Preview</h3>
               <p className="text-xs text-gray-500 font-medium">
-                {selectedApp?.organizationName || selectedApp?.user?.fullName || 'Select an applicant'}
+                {activeApp?.organizationName || activeApp?.user?.fullName || 'Select an applicant'}
               </p>
             </div>
-            {selectedApp && (
+            {activeApp && (
               <button
                 onClick={() => setSelectedApp(null)}
                 className="text-gray-400 hover:text-gray-600 p-1 rounded-lg"
@@ -354,7 +361,7 @@ export default function AdminVerifications() {
             )}
           </div>
 
-          {selectedApp ? (
+          {activeApp ? (
             <div className="mt-4 space-y-4">
               {/* Document Certificate Frame with Crop marks */}
               <div className="relative bg-white border border-gray-300/80 rounded-xl p-6 shadow-inner text-center min-h-[300px] flex flex-col justify-between overflow-hidden">
@@ -373,7 +380,7 @@ export default function AdminVerifications() {
                     CERTIFICATE OF REGISTRATION
                   </span>
                   <h4 className="text-base font-extrabold text-[#1F2937] mt-1 font-serif">
-                    {selectedApp.organizationName || selectedApp.user?.fullName}
+                    {activeApp.organizationName || activeApp.user?.fullName}
                   </h4>
                 </div>
 
@@ -384,32 +391,45 @@ export default function AdminVerifications() {
                     verified under the applicable statutory requirements.&rdquo;
                   </p>
                   <p className="text-[10px] text-gray-400 mt-2 font-mono">
-                    Doc ID: {selectedApp.documentDetails?.certNumber || 'REG-8841-MH'}
+                    Doc ID: {activeApp.documentDetails?.certNumber || 'REG-8841-MH'}
                   </p>
                 </div>
 
                 {/* Verified Circle Stamp */}
                 <div className="my-2">
                   <div className="inline-flex items-center justify-center w-16 h-16 rounded-full border-2 border-dashed border-[#2E7D32] text-[#2E7D32] text-[9px] font-extrabold uppercase tracking-tight rotate-[-8deg] shadow-2xs">
-                    VERIFIED
+                    {activeApp.reviewStatus === 'approved' ? 'VERIFIED' : 'PENDING'}
                   </div>
                 </div>
 
                 {/* Zoom Controls Bar */}
-                <div className="pt-2 border-t border-gray-100 flex items-center justify-end space-x-2 text-xs text-gray-500">
-                  <button
-                    onClick={() => setZoomLevel((z) => Math.max(z - 10, 70))}
-                    className="p-1 hover:text-gray-800"
-                  >
-                    <ZoomOut className="w-3.5 h-3.5" />
-                  </button>
-                  <span className="font-mono text-[11px] font-semibold">{zoomLevel}%</span>
-                  <button
-                    onClick={() => setZoomLevel((z) => Math.min(z + 10, 150))}
-                    className="p-1 hover:text-gray-800"
-                  >
-                    <ZoomIn className="w-3.5 h-3.5" />
-                  </button>
+                <div className="pt-2 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500">
+                  {activeApp.documentUrl ? (
+                    <a
+                      href={activeApp.documentUrl.startsWith('http') ? activeApp.documentUrl : `http://localhost:5000${activeApp.documentUrl}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center space-x-1.5 text-xs font-bold text-[#1565C0] hover:underline"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>View Attached File</span>
+                    </a>
+                  ) : <span />}
+                  <div className="flex items-center space-x-2">
+                    <button
+                      onClick={() => setZoomLevel((z) => Math.max(z - 10, 70))}
+                      className="p-1 hover:text-gray-800"
+                    >
+                      <ZoomOut className="w-3.5 h-3.5" />
+                    </button>
+                    <span className="font-mono text-[11px] font-semibold">{zoomLevel}%</span>
+                    <button
+                      onClick={() => setZoomLevel((z) => Math.min(z + 10, 150))}
+                      className="p-1 hover:text-gray-800"
+                    >
+                      <ZoomIn className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -417,25 +437,25 @@ export default function AdminVerifications() {
               <div>
                 <h5 className="text-xs font-bold text-gray-700">Applicant notes</h5>
                 <p className="text-xs text-gray-600 mt-1 bg-gray-50 p-3 rounded-xl border border-gray-100 leading-relaxed">
-                  {selectedApp.applicantNotes ||
+                  {activeApp.applicantNotes ||
                     'All requested supporting documents are included. Please contact us if any additional information is required.'}
                 </p>
               </div>
 
               {/* Action Button */}
-              {selectedApp.reviewStatus === 'approved' ? (
+              {activeApp.reviewStatus === 'approved' ? (
                 <div className="w-full py-2.5 bg-emerald-50 text-[#2E7D32] border border-emerald-200 rounded-xl font-bold text-xs flex items-center justify-center space-x-1.5">
                   <CheckCircle2 className="w-4 h-4" />
                   <span>Approved on Platform</span>
                 </div>
-              ) : selectedApp.reviewStatus === 'rejected' ? (
+              ) : activeApp.reviewStatus === 'rejected' ? (
                 <div className="w-full py-2.5 bg-red-50 text-red-600 border border-red-200 rounded-xl font-bold text-xs flex items-center justify-center space-x-1.5">
                   <AlertCircle className="w-4 h-4" />
                   <span>Application Rejected</span>
                 </div>
               ) : (
                 <button
-                  onClick={() => handleApprove(selectedApp)}
+                  onClick={() => handleApprove(activeApp)}
                   className="w-full py-3 bg-[#2E7D32] hover:bg-[#1B5E20] text-white font-bold text-xs sm:text-sm rounded-xl shadow-md shadow-emerald-800/15 flex items-center justify-center space-x-2 transition-all"
                 >
                   <Check className="w-4 h-4" />
@@ -444,8 +464,16 @@ export default function AdminVerifications() {
               )}
             </div>
           ) : (
-            <div className="py-20 text-center text-gray-400 text-xs">
-              Select an applicant from the left to inspect their documentation.
+            <div className="py-24 text-center px-4">
+              <div className="w-12 h-12 rounded-2xl bg-gray-50 border border-gray-100 text-gray-400 flex items-center justify-center mx-auto mb-3">
+                <ShieldCheck className="w-6 h-6 text-gray-300" />
+              </div>
+              <h4 className="text-xs font-bold text-gray-700">No application to preview</h4>
+              <p className="text-[11px] text-gray-400 mt-1 max-w-[220px] mx-auto">
+                {filteredApps.length === 0
+                  ? 'There are currently no applications waiting for verification in this view.'
+                  : 'Select an applicant from the left to inspect their documentation.'}
+              </p>
             </div>
           )}
         </div>

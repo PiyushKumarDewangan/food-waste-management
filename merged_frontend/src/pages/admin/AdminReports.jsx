@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Leaf,
   Scale,
@@ -20,40 +20,61 @@ export default function AdminReports() {
   const [leaderboardTab, setLeaderboardTab] = useState('donors') // 'donors' | 'volunteers'
   const [hoveredBar, setHoveredBar] = useState(null)
   const [toastMessage, setToastMessage] = useState(null)
+  const [loading, setLoading] = useState(false)
 
-  const monthlyBars = [
-    { month: 'May', weight: 2100, heightPct: 43 },
-    { month: 'Jun', weight: 2650, heightPct: 54 },
-    { month: 'Jul', weight: 3100, heightPct: 63 },
-    { month: 'Aug', weight: 3450, heightPct: 71 },
-    { month: 'Sep', weight: 4020, heightPct: 82 },
-    { month: 'Oct', weight: 4850, heightPct: 100 },
-  ]
+  const [kpis, setKpis] = useState({
+    totalMeals: 0,
+    totalWeightKg: 0,
+    co2PreventedTons: 0,
+    waterSavedLiters: 0,
+    rescuesCount: 0
+  })
 
-  const topDonors = [
-    { rank: 1, name: 'Hyatt Regency Mumbai', weight: '1,240 kg', meals: '3,200 meals' },
-    { rank: 2, name: 'Metro Supermarket', weight: '960 kg', meals: '2,400 meals' },
-    { rank: 3, name: 'Marriott Bistro', weight: '785 kg', meals: '1,950 meals' },
-  ]
+  const [monthlyBars, setMonthlyBars] = useState([])
+  const [topDonors, setTopDonors] = useState([])
+  const [starVolunteers, setStarVolunteers] = useState([])
+  const [categoryBreakdown, setCategoryBreakdown] = useState([])
+  const [growthLabel, setGrowthLabel] = useState('+18% MoM')
 
-  const starVolunteers = [
-    { rank: 1, name: 'Rahul Verma', deliveries: 82, rating: '⭐ 4.9', badge: 'Star Courier' },
-    { rank: 2, name: 'Priya Sharma', deliveries: 64, rating: '⭐ 5.0', badge: 'Reliability Champion' },
-    { rank: 3, name: 'Amit Patel', deliveries: 49, rating: '⭐ 4.8', badge: 'Rapid Responder' },
-  ]
+  const loadReports = async () => {
+    try {
+      setLoading(true)
+      const data = await adminService.getImpactAnalytics(timeRange)
+      if (data) {
+        if (data.kpis) setKpis(data.kpis)
+        const bars = data.monthlyBars || data.monthlyGrowth
+        if (Array.isArray(bars) && bars.length > 0) setMonthlyBars(bars)
+        if (Array.isArray(data.topDonors)) setTopDonors(data.topDonors)
+        if (Array.isArray(data.starVolunteers)) setStarVolunteers(data.starVolunteers)
+        if (Array.isArray(data.categoryBreakdown)) setCategoryBreakdown(data.categoryBreakdown)
+        if (data.growthLabel) setGrowthLabel(data.growthLabel)
+      }
+    } catch (err) {
+      console.warn('Failed to load reports:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadReports()
+  }, [timeRange])
 
   // Export CSV
   const handleExportCSV = () => {
+    const rows = monthlyBars.map((b) => [
+      b.month,
+      b.weight,
+      Math.round(b.weight * 2.6),
+      ((b.weight * 2.5) / 1000).toFixed(1),
+      b.weight * 65
+    ])
+
     const csvContent =
       'data:text/csv;charset=utf-8,' +
       [
         'Month,Food Rescued (kg),Meals Distributed,CO2 Averted (Tons),Water Conserved (Liters)',
-        'May,2100,5500,5.2,140000',
-        'Jun,2650,7000,6.6,175000',
-        'Jul,3100,8200,7.8,205000',
-        'Aug,3450,9100,8.7,230000',
-        'Sep,4020,10600,10.1,265000',
-        'Oct,4850,12800,12.2,320000',
+        ...rows.map(r => r.join(','))
       ].join('\n')
 
     const encodedUri = encodeURI(csvContent)
@@ -132,11 +153,11 @@ export default function AdminReports() {
               Total Meals Distributed
             </span>
             <h3 className="text-2xl sm:text-3xl font-extrabold text-[#1F2937] mt-1.5">
-              12,800 Meals
+              {(kpis.totalMeals ?? 0).toLocaleString()} Meals
             </h3>
             <span className="inline-flex items-center text-[11px] font-bold text-[#2E7D32] mt-2">
               <TrendingUp className="w-3 h-3 mr-1" />
-              +18% MoM
+              {growthLabel}
             </span>
           </div>
           <div className="w-10 h-10 rounded-xl bg-emerald-50 text-[#2E7D32] flex items-center justify-center shrink-0">
@@ -151,10 +172,10 @@ export default function AdminReports() {
               Food Rescued Weight
             </span>
             <h3 className="text-2xl sm:text-3xl font-extrabold text-[#1F2937] mt-1.5">
-              4,850 kg
+              {(kpis.totalWeightKg ?? 0).toLocaleString()} kg
             </h3>
             <span className="text-[11px] text-gray-400 block mt-2 font-medium">
-              Across 286 rescues
+              Across {kpis.rescuesCount ?? 0} rescues
             </span>
           </div>
           <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#1565C0] flex items-center justify-center shrink-0">
@@ -169,10 +190,10 @@ export default function AdminReports() {
               CO₂ Emissions Prevented
             </span>
             <h3 className="text-2xl sm:text-3xl font-extrabold text-[#1F2937] mt-1.5">
-              12.2 Tons CO₂e
+              {kpis.co2PreventedTons ?? 0} Tons CO₂e
             </h3>
             <span className="text-[11px] text-gray-400 block mt-2 font-medium">
-              Equivalent to 52K km
+              Equivalent to {Math.round((kpis.co2PreventedTons || 0) * 4200)} km
             </span>
           </div>
           <div className="w-10 h-10 rounded-xl bg-purple-50 text-[#6A1B9A] flex items-center justify-center shrink-0">
@@ -187,10 +208,10 @@ export default function AdminReports() {
               Water Footprint Saved
             </span>
             <h3 className="text-2xl sm:text-3xl font-extrabold text-[#1F2937] mt-1.5">
-              320,000 Liters
+              {(kpis.waterSavedLiters ?? 0).toLocaleString()} Liters
             </h3>
             <span className="text-[11px] text-gray-400 block mt-2 font-medium">
-              128 swimming pools
+              Conserved in food lifecycle
             </span>
           </div>
           <div className="w-10 h-10 rounded-xl bg-cyan-50 text-[#00838F] flex items-center justify-center shrink-0">
@@ -210,36 +231,42 @@ export default function AdminReports() {
                 <p className="text-xs text-gray-500">Rescued food weight over the last 6 months</p>
               </div>
               <span className="bg-emerald-50 text-[#2E7D32] border border-emerald-200 text-xs font-bold px-3 py-1 rounded-full">
-                +131% growth
+                {growthLabel}
               </span>
             </div>
 
             {/* Interactive Bar Chart */}
             <div className="h-64 pt-8 flex items-end justify-between gap-3 sm:gap-6 px-2">
-              {monthlyBars.map((item, idx) => (
-                <div
-                  key={item.month}
-                  className="flex-1 flex flex-col items-center group relative cursor-pointer"
-                  onMouseEnter={() => setHoveredBar(item)}
-                  onMouseLeave={() => setHoveredBar(null)}
-                >
-                  {/* Tooltip on top of bar */}
-                  <span className="text-[11px] font-bold text-gray-700 opacity-90 group-hover:opacity-100 group-hover:text-[#2E7D32] transition-colors mb-2">
-                    {item.weight.toLocaleString()} kg
-                  </span>
-
-                  {/* Bar pillar */}
-                  <div className="w-full max-w-[48px] bg-gray-100 rounded-t-xl overflow-hidden flex flex-col justify-end h-44">
-                    <div
-                      style={{ height: `${item.heightPct}%` }}
-                      className="w-full bg-gradient-to-t from-[#1B5E20] via-[#2E7D32] to-[#66BB6A] rounded-t-xl group-hover:brightness-110 transition-all duration-300"
-                    />
-                  </div>
-
-                  {/* Month Label */}
-                  <span className="text-xs font-bold text-gray-500 mt-2.5">{item.month}</span>
+              {monthlyBars.length === 0 ? (
+                <div className="h-44 w-full flex items-center justify-center text-xs text-gray-400 font-medium">
+                  {loading ? 'Aggregating monthly food rescue data...' : 'No rescue data available for this timeframe.'}
                 </div>
-              ))}
+              ) : (
+                monthlyBars.map((item, idx) => (
+                  <div
+                    key={item.month}
+                    className="flex-1 flex flex-col items-center group relative cursor-pointer"
+                    onMouseEnter={() => setHoveredBar(item)}
+                    onMouseLeave={() => setHoveredBar(null)}
+                  >
+                    {/* Tooltip on top of bar */}
+                    <span className="text-[11px] font-bold text-gray-700 opacity-90 group-hover:opacity-100 group-hover:text-[#2E7D32] transition-colors mb-2">
+                      {item.weight.toLocaleString()} kg
+                    </span>
+
+                    {/* Bar pillar */}
+                    <div className="w-full max-w-[48px] bg-gray-100 rounded-t-xl overflow-hidden flex flex-col justify-end h-44">
+                      <div
+                        style={{ height: `${item.heightPct}%` }}
+                        className="w-full bg-gradient-to-t from-[#1B5E20] via-[#2E7D32] to-[#66BB6A] rounded-t-xl group-hover:brightness-110 transition-all duration-300"
+                      />
+                    </div>
+
+                    {/* Month Label */}
+                    <span className="text-xs font-bold text-gray-500 mt-2.5">{item.month}</span>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>
@@ -259,44 +286,41 @@ export default function AdminReports() {
                 <svg className="w-full h-full -rotate-90 transform" viewBox="0 0 100 100">
                   {/* Background Circle */}
                   <circle cx="50" cy="50" r="38" fill="transparent" stroke="#F3F4F6" strokeWidth="14" />
-                  {/* Segment 1: Cooked Meals (55%) */}
-                  <circle
-                    cx="50"
-                    cy="50"
-                    r="38"
-                    fill="transparent"
-                    stroke="#2E7D32"
-                    strokeWidth="14"
-                    strokeDasharray="131 238"
-                    strokeDashoffset="0"
-                  />
-                  {/* Segment 2: Packaged Goods (25%) */}
-                  <circle
-                    cx="50"
-                    cy="50"
-                    r="38"
-                    fill="transparent"
-                    stroke="#6A1B9A"
-                    strokeWidth="14"
-                    strokeDasharray="60 238"
-                    strokeDashoffset="-131"
-                  />
-                  {/* Segment 3: Fresh Produce (20%) */}
-                  <circle
-                    cx="50"
-                    cy="50"
-                    r="38"
-                    fill="transparent"
-                    stroke="#1565C0"
-                    strokeWidth="14"
-                    strokeDasharray="47 238"
-                    strokeDashoffset="-191"
-                  />
+                  {/* Dynamic Segments */}
+                  {(() => {
+                    const circumference = 238.76
+                    let accumulatedPercent = 0
+                    const list =
+                      categoryBreakdown.length > 0
+                        ? categoryBreakdown
+                        : [{ name: 'Cooked Meals', percentage: 100, color: '#2E7D32' }]
+                    return list.map((cat, i) => {
+                      const strokeLength = (cat.percentage / 100) * circumference
+                      const offset = (accumulatedPercent / 100) * circumference
+                      accumulatedPercent += cat.percentage
+                      return (
+                        <circle
+                          key={cat.name || i}
+                          cx="50"
+                          cy="50"
+                          r="38"
+                          fill="transparent"
+                          stroke={cat.color || '#2E7D32'}
+                          strokeWidth="14"
+                          strokeDasharray={`${strokeLength} ${circumference}`}
+                          strokeDashoffset={-offset}
+                          className="transition-all duration-500"
+                        />
+                      )
+                    })
+                  })()}
                 </svg>
 
                 {/* Central Label */}
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                  <span className="text-lg font-extrabold text-gray-900 leading-tight">4,850</span>
+                  <span className="text-lg font-extrabold text-gray-900 leading-tight">
+                    {(kpis.totalWeightKg ?? 0).toLocaleString()}
+                  </span>
                   <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
                     Total kg
                   </span>
@@ -304,22 +328,21 @@ export default function AdminReports() {
               </div>
 
               {/* Donut Legend */}
-              <div className="space-y-3 text-xs">
-                <div className="flex items-center space-x-3">
-                  <span className="w-3 h-3 rounded-full bg-[#2E7D32] shrink-0" />
-                  <span className="font-semibold text-gray-700">Cooked Meals</span>
-                  <span className="font-extrabold text-gray-900 ml-auto">55%</span>
-                </div>
-                <div className="flex items-center space-x-3">
-                  <span className="w-3 h-3 rounded-full bg-[#6A1B9A] shrink-0" />
-                  <span className="font-semibold text-gray-700">Packaged Goods</span>
-                  <span className="font-extrabold text-gray-900 ml-auto">25%</span>
-                </div>
-                <div className="flex items-center space-x-3">
-                  <span className="w-3 h-3 rounded-full bg-[#1565C0] shrink-0" />
-                  <span className="font-semibold text-gray-700">Fresh Produce</span>
-                  <span className="font-extrabold text-gray-900 ml-auto">20%</span>
-                </div>
+              <div className="space-y-3 text-xs flex-1 max-w-[220px]">
+                {categoryBreakdown.length === 0 ? (
+                  <p className="text-gray-400 text-xs text-center">No categories recorded yet.</p>
+                ) : (
+                  categoryBreakdown.map((cat) => (
+                    <div key={cat.name} className="flex items-center space-x-3">
+                      <span
+                        className="w-3 h-3 rounded-full shrink-0"
+                        style={{ backgroundColor: cat.color }}
+                      />
+                      <span className="font-semibold text-gray-700 truncate">{cat.name}</span>
+                      <span className="font-extrabold text-gray-900 ml-auto">{cat.percentage}%</span>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           </div>
@@ -361,8 +384,13 @@ export default function AdminReports() {
 
         {/* Leaderboard Rows */}
         <div className="divide-y divide-gray-100 pt-1">
-          {leaderboardTab === 'donors'
-            ? topDonors.map((item) => (
+          {leaderboardTab === 'donors' ? (
+            topDonors.length === 0 ? (
+              <div className="py-8 text-center text-xs text-gray-400 font-medium">
+                {loading ? 'Fetching donor contributions...' : 'No donor activity recorded for this period.'}
+              </div>
+            ) : (
+              topDonors.map((item) => (
                 <div
                   key={item.rank}
                   className="py-3.5 flex items-center justify-between hover:bg-gray-50/50 rounded-xl px-2 transition-colors"
@@ -392,41 +420,48 @@ export default function AdminReports() {
                   </span>
                 </div>
               ))
-            : starVolunteers.map((item) => (
-                <div
-                  key={item.rank}
-                  className="py-3.5 flex items-center justify-between hover:bg-gray-50/50 rounded-xl px-2 transition-colors"
-                >
-                  <div className="flex items-center space-x-3.5">
-                    <span
-                      className={`w-6 h-6 rounded-full flex items-center justify-center font-extrabold text-xs ${
-                        item.rank === 1
-                          ? 'bg-amber-100 text-amber-800'
-                          : item.rank === 2
-                          ? 'bg-gray-200 text-gray-700'
-                          : 'bg-amber-50 text-amber-600'
-                      }`}
-                    >
-                      {item.rank}
-                    </span>
-                    <div>
-                      <h4 className="text-xs sm:text-sm font-bold text-gray-900 leading-snug">
-                        {item.name}
-                      </h4>
-                      <p className="text-[11px] text-gray-400 font-medium">{item.badge}</p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center space-x-4">
-                    <span className="text-xs font-semibold text-gray-600">
-                      {item.deliveries} deliveries
-                    </span>
-                    <span className="font-bold text-xs bg-amber-50 text-amber-700 px-2.5 py-0.5 rounded-full border border-amber-200">
-                      {item.rating}
-                    </span>
+            )
+          ) : starVolunteers.length === 0 ? (
+            <div className="py-8 text-center text-xs text-gray-400 font-medium">
+              {loading ? 'Fetching volunteer deliveries...' : 'No volunteer activity recorded for this period.'}
+            </div>
+          ) : (
+            starVolunteers.map((item) => (
+              <div
+                key={item.rank}
+                className="py-3.5 flex items-center justify-between hover:bg-gray-50/50 rounded-xl px-2 transition-colors"
+              >
+                <div className="flex items-center space-x-3.5">
+                  <span
+                    className={`w-6 h-6 rounded-full flex items-center justify-center font-extrabold text-xs ${
+                      item.rank === 1
+                        ? 'bg-amber-100 text-amber-800'
+                        : item.rank === 2
+                        ? 'bg-gray-200 text-gray-700'
+                        : 'bg-amber-50 text-amber-600'
+                    }`}
+                  >
+                    {item.rank}
+                  </span>
+                  <div>
+                    <h4 className="text-xs sm:text-sm font-bold text-gray-900 leading-snug">
+                      {item.name}
+                    </h4>
+                    <p className="text-[11px] text-gray-400 font-medium">{item.badge}</p>
                   </div>
                 </div>
-              ))}
+
+                <div className="flex items-center space-x-4">
+                  <span className="text-xs font-semibold text-gray-600">
+                    {item.deliveries} deliveries
+                  </span>
+                  <span className="font-bold text-xs bg-amber-50 text-amber-700 px-2.5 py-0.5 rounded-full border border-amber-200">
+                    {item.rating}
+                  </span>
+                </div>
+              </div>
+            ))
+          )}
         </div>
       </div>
 
