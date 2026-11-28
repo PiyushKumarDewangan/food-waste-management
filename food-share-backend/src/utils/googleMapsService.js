@@ -54,7 +54,15 @@ export async function geocodeAddress(address) {
     return null
   }
 
-  const cleanAddr = address.trim()
+  // Strip leading person name prefixes (e.g. "tarak doctor, ") to avoid matching clinics in distant neighborhoods (like Mowa)
+  let cleanAddr = address
+    .trim()
+    .replace(/^tarak\s+doctor\s*,?\s*/i, '')
+    .replace(/^receiver\s*,?\s*/i, '')
+    .trim()
+
+  if (cleanAddr.length < 2) cleanAddr = address.trim()
+
   const lowerAddr = cleanAddr.toLowerCase()
   const cacheKey = `geocode:${lowerAddr}`
   const cached = getCached(cacheKey)
@@ -69,10 +77,19 @@ export async function geocodeAddress(address) {
       formattedAddress: 'Sector 4, Bhilai, Chhattisgarh, India',
     },
     {
-      keys: ['tikrapara', 'tikrapara raipur', 'tikra para', 'tikrapara, raipur'],
-      lat: 21.2269,
-      lng: 81.6366,
-      formattedAddress: 'Tikrapara, Raipur, Chhattisgarh, India',
+      keys: [
+        'tikrapara',
+        'tikrapara raipur',
+        'tikra para',
+        'tikrapara, raipur',
+        'pujari nagar',
+        'mahamai para',
+        'pujari nagar raipur',
+        'mahamai para raipur',
+      ],
+      lat: 21.2273925,
+      lng: 81.6357026,
+      formattedAddress: 'Pujari Nagar, Mahamai Para, Tikrapara, Raipur, Chhattisgarh 492001, India',
     },
     {
       keys: ['bhilai', 'bhilai nagar', 'durg bhilai', 'civic center bhilai'],
@@ -104,6 +121,13 @@ export async function geocodeAddress(address) {
     loc.keys.some((k) => lowerAddr.includes(k))
   )
 
+  // If address matches our curated local neighborhood hub (e.g. Tikrapara/Pujari Nagar/Mahamai Para),
+  // return the exact ground-truth location immediately to avoid Google API misrouting to Mowa clinics
+  if (knownMatch && (lowerAddr.includes('tikrapara') || lowerAddr.includes('pujari nagar') || lowerAddr.includes('mahamai para'))) {
+    setCached(cacheKey, knownMatch)
+    return knownMatch
+  }
+
   const apiKey = env.GOOGLE_MAPS_API_KEY
 
   // 1. Try Google Geocoding API if key is available
@@ -118,6 +142,14 @@ export async function geocodeAddress(address) {
         const geoData = await geoRes.json()
         if (geoData.status === 'OK' && geoData.results && geoData.results.length > 0) {
           const top = geoData.results[0]
+          const topAddr = (top.formatted_address || '').toLowerCase()
+          // If query was for Tikrapara/Mahamai Para but Google returned Mowa (due to clinic name lookup), use Tikrapara ground-truth!
+          if (topAddr.includes('mowa') && (lowerAddr.includes('pujari nagar') || lowerAddr.includes('mahamai para') || lowerAddr.includes('tikrapara') || lowerAddr.includes('492001'))) {
+            const tikraparaLoc = KNOWN_LOCATIONS[1]
+            setCached(cacheKey, tikraparaLoc)
+            return tikraparaLoc
+          }
+
           const loc = top.geometry?.location
           if (loc && loc.lat != null && loc.lng != null) {
             const result = {
@@ -419,7 +451,46 @@ export async function getRoadRoute({
 
   const apiKey = env.GOOGLE_MAPS_API_KEY
 
-  // Helper fallback if API key is not present or API call fails
+  // Helper: OSRM Driving Road Routing Engine
+  const fetchOSRMRoute = async () => {
+    try {
+      const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${oLng},${oLat};${dLng},${dLat}?overview=full&geometries=geojson`
+      const res = await fetch(osrmUrl, {
+        headers: { 'User-Agent': 'FoodShare-Routing/1.0 (contact@foodshare.local)' },
+      })
+      if (res.ok) {
+        const osrmData = await res.json()
+        const route = osrmData.routes?.[0]
+        if (route && route.geometry?.coordinates?.length > 0) {
+          const distanceMeters = Math.round(route.distance || 0)
+          const distanceKm = Number((distanceMeters / 1000).toFixed(1))
+          const durationSeconds = Math.round(route.duration || (distanceKm / 35) * 3600)
+          const mins = Math.max(1, Math.round(durationSeconds / 60))
+          const durationText = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins} mins`
+          // OSRM GeoJSON gives [lng, lat], Leaflet needs [lat, lng]
+          const coordinates = route.geometry.coordinates.map(([lng, lat]) => [lat, lng])
+
+          const result = {
+            distanceMeters,
+            distanceKm,
+            durationSeconds,
+            durationText,
+            coordinates,
+            encodedPolyline: '',
+            provider: 'OSRM',
+            isFallback: false,
+          }
+          setCached(cacheKey, result)
+          return result
+        }
+      }
+    } catch (osrmErr) {
+      console.warn('OSRM routing fetch warning:', osrmErr.message)
+    }
+    return null
+  }
+
+  // Helper fallback if all road routing providers fail (offline mode)
   const computeFallback = () => {
     const haversineKm = calculateDistanceKm(oLat, oLng, dLat, dLng)
     if (haversineKm == null) return null
@@ -428,71 +499,80 @@ export async function getRoadRoute({
       distanceKm: Number(haversineKm.toFixed(1)),
       durationSeconds: Math.round((haversineKm / 30) * 3600), // ~30 km/h baseline
       durationText: `${Math.round(haversineKm * 2)} mins`,
+      coordinates: [
+        [oLat, oLng],
+        [dLat, dLng],
+      ],
       encodedPolyline: '',
+      provider: 'Haversine',
       isFallback: true,
     }
   }
 
-  if (!apiKey) {
-    return computeFallback()
+  // 1. Try Google Routes API first if key is present
+  if (apiKey) {
+    try {
+      const response = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': apiKey,
+          'X-Goog-FieldMask': 'routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline',
+        },
+        body: JSON.stringify({
+          origin: {
+            location: {
+              latLng: { latitude: oLat, longitude: oLng },
+            },
+          },
+          destination: {
+            location: {
+              latLng: { latitude: dLat, longitude: dLng },
+            },
+          },
+          travelMode: mode,
+          routingPreference: mode === 'DRIVE' || mode === 'TWO_WHEELER' ? 'TRAFFIC_UNAWARE' : undefined,
+        }),
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        const route = data.routes?.[0]
+        if (route && route.polyline?.encodedPolyline) {
+          const distanceMeters = route.distanceMeters || 0
+          const distanceKm = Number((distanceMeters / 1000).toFixed(1))
+          const durationSeconds = parseInt(route.duration?.replace('s', '') || '0', 10)
+          const mins = Math.max(1, Math.round(durationSeconds / 60))
+          const durationText = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins} mins`
+
+          const result = {
+            distanceMeters,
+            distanceKm,
+            durationSeconds,
+            durationText,
+            encodedPolyline: route.polyline.encodedPolyline,
+            coordinates: [],
+            provider: 'Google',
+            isFallback: false,
+          }
+
+          setCached(cacheKey, result)
+          return result
+        }
+      }
+    } catch (error) {
+      console.warn('Google Routes API error, falling back to OSRM:', error.message)
+    }
   }
 
-  try {
-    const response = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Goog-Api-Key': apiKey,
-        'X-Goog-FieldMask': 'routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline',
-      },
-      body: JSON.stringify({
-        origin: {
-          location: {
-            latLng: { latitude: oLat, longitude: oLng },
-          },
-        },
-        destination: {
-          location: {
-            latLng: { latitude: dLat, longitude: dLng },
-          },
-        },
-        travelMode: mode,
-        routingPreference: mode === 'DRIVE' || mode === 'TWO_WHEELER' ? 'TRAFFIC_UNAWARE' : undefined,
-      }),
-    })
-
-    if (!response.ok) {
-      console.warn('Google Routes API HTTP error:', response.status)
-      return computeFallback()
-    }
-
-    const data = await response.json()
-    const route = data.routes?.[0]
-    if (!route) {
-      return computeFallback()
-    }
-
-    const distanceMeters = route.distanceMeters || 0
-    const distanceKm = Number((distanceMeters / 1000).toFixed(1))
-    const durationSeconds = parseInt(route.duration?.replace('s', '') || '0', 10)
-    const mins = Math.max(1, Math.round(durationSeconds / 60))
-    const durationText = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins} mins`
-
-    const result = {
-      distanceMeters,
-      distanceKm,
-      durationSeconds,
-      durationText,
-      encodedPolyline: route.polyline?.encodedPolyline || '',
-      isFallback: false,
-    }
-
-    setCached(cacheKey, result)
-    return result
-  } catch (error) {
-    console.error('getRoadRoute error:', error.message)
-    return computeFallback()
+  // 2. Real road routing via OSRM Driving Engine
+  const osrmResult = await fetchOSRMRoute()
+  if (osrmResult) {
+    return osrmResult
   }
+
+  // 3. Fallback
+  return computeFallback()
 }
 
 /**

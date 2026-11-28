@@ -825,7 +825,7 @@ export const getMyExchanges = asyncHandler(async (req, res) => {
   const exchanges = await Exchange.find(filter)
     .populate('donation', 'title category quantity unit imageUrl pickupAddress pickupWindow lat lng')
     .populate('items.donation', 'title category quantity unit imageUrl lat lng')
-    .populate('receiver', 'fullName email phone')
+    .populate('receiver', 'fullName email phone address')
     .populate('volunteer', 'fullName email phone')
     .sort({ createdAt: -1 })
 
@@ -837,6 +837,15 @@ export const getMyExchanges = asyncHandler(async (req, res) => {
     ? await VolunteerProfile.find({ user: { $in: volunteerIds } })
     : []
   const profileMap = new Map(volProfiles.map((p) => [p.user.toString(), p]))
+
+  const receiverIds = exchanges
+    .filter((e) => e.receiver)
+    .map((e) => e.receiver._id || e.receiver)
+
+  const recProfiles = receiverIds.length > 0
+    ? await ReceiverProfile.find({ user: { $in: receiverIds } })
+    : []
+  const recProfileMap = new Map(recProfiles.map((p) => [p.user.toString(), p]))
 
   // Ensure codes, accurate coordinates, and volunteer live statistics are properly assigned
   for (const ex of exchanges) {
@@ -852,6 +861,43 @@ export const getMyExchanges = asyncHandler(async (req, res) => {
       }
       ex.deliveryCode = code2
       changed = true
+    }
+
+    // Resolve accurate drop-off address and coordinates from ReceiverProfile
+    if (ex.receiver) {
+      const recUserKey = (ex.receiver._id || ex.receiver).toString()
+      const rProfile = recProfileMap.get(recUserKey)
+      const receiverName = (ex.receiver?.fullName || ex.receiver?.name || '').trim().toLowerCase()
+      const currentDropoffLower = (ex.dropoffAddress || '').trim().toLowerCase()
+      const isGenericOrName =
+        !ex.dropoffAddress ||
+        ['receiver address', 'receiver delivery address', 'indore', 'receiver'].includes(currentDropoffLower) ||
+        (receiverName && currentDropoffLower === receiverName) ||
+        currentDropoffLower.length < 5
+
+      if (rProfile) {
+        if (rProfile.lat != null && rProfile.lng != null && (!ex.dropoffCoords || ex.dropoffCoords.lat == null)) {
+          ex.dropoffCoords = { lat: rProfile.lat, lng: rProfile.lng }
+          changed = true
+        }
+        const realReceiverAddr =
+          (rProfile.dropoffAddress && !['87 Elm Street, Downtown, CA 90210', 'Receiver Address', 'Indore'].includes(rProfile.dropoffAddress.trim())
+            ? rProfile.dropoffAddress.trim()
+            : null) ||
+          (ex.receiver?.address && !['Indore'].includes(ex.receiver.address.trim()) ? ex.receiver.address.trim() : null) ||
+          (rProfile.organizationAddress && !['87 Elm Street, Downtown, CA 90210', 'Receiver Address', 'Indore'].includes(rProfile.organizationAddress.trim())
+            ? rProfile.organizationAddress.trim()
+            : null)
+
+        if (realReceiverAddr && (isGenericOrName || !ex.dropoffCoords?.lat)) {
+          ex.dropoffAddress = realReceiverAddr
+          changed = true
+        }
+      }
+      if (isGenericOrName && ex.receiver?.address && !['Indore'].includes(ex.receiver.address.trim())) {
+        ex.dropoffAddress = ex.receiver.address
+        changed = true
+      }
     }
 
     // Resolve missing coordinates dynamically to fix legacy/missing coordinate exchanges

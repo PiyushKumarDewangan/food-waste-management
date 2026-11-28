@@ -8,15 +8,17 @@ import {
   X,
   Check,
   Loader2,
-  Navigation,
   Compass,
-  AlertCircle,
+  Layers,
+  Sparkles,
+  Building,
 } from 'lucide-react'
 import {
   getAddressSuggestions,
   getPlaceLocation,
   reverseGeocodeCoords,
 } from '../../services/mapsService'
+import { TILE_PROVIDERS, createDraggablePin } from './mapDesignSystem'
 
 // Default center: Central Chhattisgarh corridor (Bhilai / Durg / Raipur)
 const DEFAULT_CENTER = { lat: 21.2144, lng: 81.3805 }
@@ -31,17 +33,21 @@ export default function LocationPickerModal({
 }) {
   const mapContainerRef = useRef(null)
   const mapInstanceRef = useRef(null)
+  const tileLayerRef = useRef(null)
   const markerRef = useRef(null)
+  const accuracyCircleRef = useRef(null)
   const searchDebounceRef = useRef(null)
 
-  // Current selected coordinates and address
+  // Current selected coordinates, address, and landmark
   const [selectedCoords, setSelectedCoords] = useState(
     initialCoords?.lat != null && initialCoords?.lng != null
       ? { lat: Number(initialCoords.lat), lng: Number(initialCoords.lng) }
       : DEFAULT_CENTER
   )
   const [addressText, setAddressText] = useState(initialAddress || '')
+  const [landmarkText, setLandmarkText] = useState('')
   const [isReverseGeocoding, setIsReverseGeocoding] = useState(false)
+  const [activeTileKey, setActiveTileKey] = useState('roadmap') // 'roadmap' | 'satellite'
 
   // Search autocomplete inside modal
   const [searchQuery, setSearchQuery] = useState('')
@@ -61,28 +67,11 @@ export default function LocationPickerModal({
 
     setSelectedCoords(initial)
     setAddressText(initialAddress || '')
+    setLandmarkText('')
     setSearchQuery('')
     setSuggestions([])
     setShowSuggestions(false)
   }, [isOpen, initialCoords?.lat, initialCoords?.lng, initialAddress])
-
-  // Custom modern pin marker
-  const createDraggableIcon = () =>
-    L.divIcon({
-      className: 'custom-pin-marker',
-      html: `
-        <div style="position: relative; display: flex; flex-direction: column; align-items: center; cursor: grab; filter: drop-shadow(0 6px 14px rgba(22, 101, 52, 0.45)); transform: translate(0, -50%);">
-          <div style="width: 40px; height: 40px; border-radius: 50% 50% 50% 4px; transform: rotate(-45deg); background: linear-gradient(135deg, #16a34a 0%, #15803d 100%); border: 3px solid #ffffff; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(0,0,0,0.25);">
-            <div style="transform: rotate(45deg); width: 12px; height: 12px; background: #ffffff; border-radius: 50%;"></div>
-          </div>
-          <div style="margin-top: -6px; background: #0f172a; color: #ffffff; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 9999px; letter-spacing: 0.3px; white-space: nowrap; border: 1px solid rgba(255,255,255,0.2); box-shadow: 0 2px 6px rgba(0,0,0,0.3);">
-            Drag to Set
-          </div>
-        </div>
-      `,
-      iconSize: [40, 52],
-      iconAnchor: [20, 48],
-    })
 
   // Reverse geocode when coordinates change
   const fetchAddressForCoords = async (lat, lng) => {
@@ -106,11 +95,9 @@ export default function LocationPickerModal({
     let isCancelled = false
     let resizeObserver = null
 
-    // Give DOM a frame to compute modal dimensions
     const initTimer = setTimeout(() => {
       if (isCancelled || !mapContainerRef.current) return
 
-      // Clean up any existing map instance
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove()
         mapInstanceRef.current = null
@@ -121,23 +108,17 @@ export default function LocationPickerModal({
 
       const map = L.map(mapContainerRef.current, {
         center: [startLat, startLng],
-        zoom: 15,
+        zoom: 16,
         zoomControl: false,
       })
 
-      // Standard reliable OpenStreetMap tiles
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        subdomains: ['a', 'b', 'c'],
-        attribution: '© OpenStreetMap contributors',
-      }).addTo(map)
+      const tileConfig = TILE_PROVIDERS[activeTileKey] || TILE_PROVIDERS.roadmap
+      const baseLayer = L.tileLayer(tileConfig.url, tileConfig.options).addTo(map)
+      tileLayerRef.current = baseLayer
 
-      // Zoom controls at bottom-right
-      L.control.zoom({ position: 'bottomright' }).addTo(map)
-
-      // Add draggable marker
+      // Draggable custom marker
       const marker = L.marker([startLat, startLng], {
-        icon: createDraggableIcon(),
+        icon: createDraggablePin({ label: 'Drag to set pin' }),
         draggable: true,
         autoPan: true,
       }).addTo(map)
@@ -162,12 +143,10 @@ export default function LocationPickerModal({
       mapInstanceRef.current = map
       markerRef.current = marker
 
-      // Invalidate size immediately and after slight delay
       map.invalidateSize()
       setTimeout(() => map.invalidateSize(), 150)
       setTimeout(() => map.invalidateSize(), 350)
 
-      // Observe size changes to keep tiles sharp
       if (typeof ResizeObserver !== 'undefined' && mapContainerRef.current) {
         resizeObserver = new ResizeObserver(() => {
           map.invalidateSize()
@@ -187,8 +166,19 @@ export default function LocationPickerModal({
     }
   }, [isOpen])
 
+  // Dynamic Tile Layer Switcher
+  useEffect(() => {
+    if (!mapInstanceRef.current) return
+    const map = mapInstanceRef.current
+    if (tileLayerRef.current) {
+      map.removeLayer(tileLayerRef.current)
+    }
+    const tileConfig = TILE_PROVIDERS[activeTileKey] || TILE_PROVIDERS.roadmap
+    tileLayerRef.current = L.tileLayer(tileConfig.url, tileConfig.options).addTo(map)
+  }, [activeTileKey])
+
   // Move marker and pan map programmatically
-  const updateMapPosition = (lat, lng, zoomLevel = 16) => {
+  const updateMapPosition = (lat, lng, zoomLevel = 16, accuracyRadius = null) => {
     const nLat = Number(Number(lat).toFixed(6))
     const nLng = Number(Number(lng).toFixed(6))
     setSelectedCoords({ lat: nLat, lng: nLng })
@@ -196,11 +186,26 @@ export default function LocationPickerModal({
     if (mapInstanceRef.current && markerRef.current) {
       markerRef.current.setLatLng([nLat, nLng])
       mapInstanceRef.current.flyTo([nLat, nLng], zoomLevel, { duration: 1 })
+
+      // Show accuracy circle if GPS accuracy radius provided
+      if (accuracyCircleRef.current) {
+        mapInstanceRef.current.removeLayer(accuracyCircleRef.current)
+        accuracyCircleRef.current = null
+      }
+      if (accuracyRadius && accuracyRadius > 0) {
+        accuracyCircleRef.current = L.circle([nLat, nLng], {
+          radius: Math.min(accuracyRadius, 500),
+          color: '#10b981',
+          fillColor: '#10b981',
+          fillOpacity: 0.15,
+          weight: 1.5,
+        }).addTo(mapInstanceRef.current)
+      }
     }
     fetchAddressForCoords(nLat, nLng)
   }
 
-  // Handle in-modal search input
+  // Handle search autocomplete
   const handleSearchChange = (e) => {
     const query = e.target.value
     setSearchQuery(query)
@@ -246,7 +251,7 @@ export default function LocationPickerModal({
     }
   }
 
-  // Quick Locate Me via GPS
+  // GPS Locate Me with accuracy circle
   const handleLocateMe = () => {
     if (typeof window === 'undefined' || !navigator.geolocation) {
       alert('Geolocation is not supported by your browser.')
@@ -258,8 +263,9 @@ export default function LocationPickerModal({
       (pos) => {
         const lat = Number(pos.coords.latitude.toFixed(6))
         const lng = Number(pos.coords.longitude.toFixed(6))
+        const accuracy = pos.coords.accuracy || 30
         setLocatingGps(false)
-        updateMapPosition(lat, lng, 17)
+        updateMapPosition(lat, lng, 17, accuracy)
       },
       (err) => {
         setLocatingGps(false)
@@ -277,16 +283,17 @@ export default function LocationPickerModal({
       return
     }
 
-    const finalAddress =
-      addressText && addressText.trim().length > 3
-        ? addressText.trim()
-        : `Pinned Location (${selectedCoords.lat.toFixed(4)}, ${selectedCoords.lng.toFixed(4)})`
+    let finalAddress = addressText.trim()
+    if (!finalAddress || finalAddress.length < 3) {
+      finalAddress = `Pinned Location (${selectedCoords.lat.toFixed(4)}, ${selectedCoords.lng.toFixed(4)})`
+    }
 
     if (onConfirm) {
       onConfirm({
         address: finalAddress,
         lat: selectedCoords.lat,
         lng: selectedCoords.lng,
+        landmark: landmarkText.trim(),
       })
     }
     onClose()
@@ -298,22 +305,22 @@ export default function LocationPickerModal({
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-4 animate-in fade-in duration-200">
       <div className="relative w-full max-w-3xl bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-200 flex flex-col max-h-[92vh]">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 bg-slate-50/80">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100 bg-white">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold">
+            <div className="w-8 h-8 rounded-xl bg-red-50 text-[#ea4335] flex items-center justify-center font-bold">
               <MapPin className="w-4 h-4" />
             </div>
             <div>
               <h3 className="text-sm font-bold text-slate-800">{title}</h3>
               <p className="text-[11px] text-slate-500">
-                Click anywhere or drag the green pin to your exact building or entrance
+                Click anywhere or drag the red pin to your exact building, gate, or entrance
               </p>
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition-colors cursor-pointer"
+            className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -332,12 +339,12 @@ export default function LocationPickerModal({
               onFocus={() => {
                 if (suggestions.length > 0) setShowSuggestions(true)
               }}
-              placeholder="Search area, landmark, or street name..."
-              className="w-full pl-9 pr-9 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 outline-none transition-all"
+              placeholder="Search area, landmark, or street name in Google Maps..."
+              className="w-full pl-9 pr-9 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:border-[#1a73e8] focus:ring-2 focus:ring-blue-100 outline-none transition-all"
             />
             {isSearching && (
               <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#1a73e8]" />
               </div>
             )}
 
@@ -348,9 +355,9 @@ export default function LocationPickerModal({
                   <li
                     key={item.placeId || idx}
                     onClick={() => handleSelectSuggestion(item)}
-                    className="flex items-start gap-2 px-3 py-2 text-xs text-slate-700 hover:bg-emerald-50 hover:text-emerald-900 cursor-pointer transition-colors"
+                    className="flex items-start gap-2 px-3 py-2 text-xs text-slate-700 hover:bg-blue-50 hover:text-[#1a73e8] cursor-pointer transition-colors"
                   >
-                    <MapPin className="w-3.5 h-3.5 mt-0.5 text-emerald-600 shrink-0" />
+                    <MapPin className="w-3.5 h-3.5 mt-0.5 text-[#ea4335] shrink-0" />
                     <div className="min-w-0">
                       <p className="font-semibold truncate">
                         {item.mainText || item.description}
@@ -367,26 +374,40 @@ export default function LocationPickerModal({
             )}
           </div>
 
+          {/* Layer switcher */}
+          <button
+            type="button"
+            onClick={() => setActiveTileKey((prev) => (prev === 'roadmap' ? 'satellite' : 'roadmap'))}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold border border-[#dadce0] shadow-[0_1px_3px_rgba(60,64,67,0.15)] transition-all shrink-0 cursor-pointer"
+            title={`Switch to ${activeTileKey === 'roadmap' ? 'Satellite' : 'Roadmap'} View`}
+          >
+            <Layers className="w-3.5 h-3.5 text-[#1a73e8]" />
+            <span className="hidden sm:inline capitalize">
+              {activeTileKey === 'roadmap' ? 'Satellite' : 'Roadmap'}
+            </span>
+          </button>
+
+          {/* Locate Me */}
           <button
             type="button"
             onClick={handleLocateMe}
             disabled={locatingGps}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 border border-slate-200 hover:border-emerald-200 text-xs font-semibold transition-all shrink-0 cursor-pointer disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-blue-50 text-slate-700 hover:text-[#1a73e8] border border-[#dadce0] hover:border-blue-200 text-xs font-semibold shadow-[0_1px_3px_rgba(60,64,67,0.15)] transition-all shrink-0 cursor-pointer disabled:opacity-50"
             title="Use current GPS location"
           >
             {locatingGps ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-[#1a73e8]" />
             ) : (
-              <Crosshair className="w-3.5 h-3.5 text-emerald-600" />
+              <Crosshair className="w-3.5 h-3.5 text-[#1a73e8]" />
             )}
             <span className="hidden sm:inline">Locate Me</span>
           </button>
         </div>
 
-        {/* Map View - Explicit height ensures Leaflet initializes tiles properly */}
+        {/* Map View */}
         <div
           className="relative w-full bg-slate-100 overflow-hidden"
-          style={{ height: '420px', minHeight: '420px' }}
+          style={{ height: '400px', minHeight: '400px' }}
         >
           <div
             ref={mapContainerRef}
@@ -395,57 +416,85 @@ export default function LocationPickerModal({
           />
 
           {/* Coordinate Overlay Pill */}
-          <div className="absolute top-3 left-3 z-[1000] flex items-center gap-2 bg-slate-900/85 backdrop-blur-md text-white px-3 py-1.5 rounded-xl shadow-lg border border-white/10 text-[11px] font-mono">
-            <Compass className="w-3.5 h-3.5 text-emerald-400" />
+          <div className="absolute top-3 left-3 z-[1000] flex items-center gap-2 bg-white/95 text-[#202124] px-3 py-1.5 rounded-xl shadow-[0_2px_6px_rgba(60,64,67,0.3)] border border-[#dadce0] text-[11px] font-mono font-semibold">
+            <Compass className="w-3.5 h-3.5 text-[#1a73e8]" />
             <span>
               {selectedCoords.lat.toFixed(5)}, {selectedCoords.lng.toFixed(5)}
             </span>
           </div>
 
-          {/* Instructional helper badge */}
-          <div className="absolute bottom-3 left-3 z-[1000] hidden sm:flex items-center gap-1.5 bg-white/90 backdrop-blur-md text-slate-700 px-3 py-1.5 rounded-xl shadow-md border border-slate-200/80 text-[11px] font-medium">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-            <span>Tip: Click anywhere or drag the green pin to adjust</span>
+          {/* Basemap Attribution badge */}
+          <div className="absolute top-3 right-3 z-[1000] flex items-center gap-1 bg-white/95 text-[#202124] px-2.5 py-1 rounded-xl shadow-[0_2px_6px_rgba(60,64,67,0.2)] border border-[#dadce0] text-[10px] font-bold">
+            <Sparkles className="w-3 h-3 text-[#1a73e8]" />
+            <span>Google Maps Roadmap</span>
+          </div>
+
+          {/* Google Watermark */}
+          <div className="absolute bottom-2 left-2 z-[1000] text-[11px] font-bold text-[#5f6368] bg-white/80 px-2 py-0.5 rounded shadow-[0_1px_3px_rgba(60,64,67,0.2)] border border-[#dadce0]/60 pointer-events-none select-none">
+            Google
+          </div>
+
+          {/* Instruction Tip */}
+          <div className="absolute bottom-3 right-3 z-[1000] hidden sm:flex items-center gap-1.5 bg-white/95 text-[#202124] px-3 py-1.5 rounded-xl shadow-[0_2px_6px_rgba(60,64,67,0.25)] border border-[#dadce0] text-[11px] font-medium">
+            <span className="w-2 h-2 rounded-full bg-[#ea4335] animate-ping" />
+            <span>Tip: Drag red pin or click map to pinpoint entrance</span>
           </div>
         </div>
 
         {/* Bottom Details & Action Bar */}
-        <div className="p-4 sm:p-5 bg-white border-t border-slate-100 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-          <div className="flex-1 min-w-0">
-            <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-              Address / Landmark Label
-            </label>
-            <div className="relative">
-              <input
-                type="text"
-                value={addressText}
-                onChange={(e) => setAddressText(e.target.value)}
-                placeholder="Selected address (you can refine or add landmark/flat number)..."
-                className="w-full text-xs font-semibold text-slate-800 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 pr-8 focus:bg-white focus:border-emerald-500 outline-none transition-all"
-              />
-              {isReverseGeocoding && (
-                <div className="absolute right-2.5 top-1/2 -translate-y-1/2">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600" />
-                </div>
-              )}
+        <div className="p-4 sm:p-5 bg-white border-t border-slate-100 flex flex-col gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                Verified Address
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  value={addressText}
+                  onChange={(e) => setAddressText(e.target.value)}
+                  placeholder="Street address..."
+                  className="w-full text-xs font-semibold text-slate-800 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 pr-8 focus:bg-white focus:border-[#1a73e8] outline-none transition-all"
+                />
+                {isReverseGeocoding && (
+                  <div className="absolute right-2.5 top-1/2 -translate-y-1/2">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-[#1a73e8]" />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                Landmark / Floor / Gate (Optional)
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  value={landmarkText}
+                  onChange={(e) => setLandmarkText(e.target.value)}
+                  placeholder="e.g. Gate 2, 3rd Floor, Near City Mall..."
+                  className="w-full text-xs font-semibold text-slate-800 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 focus:bg-white focus:border-[#1a73e8] outline-none transition-all"
+                />
+              </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0 pt-1 sm:pt-0">
+          <div className="flex items-center justify-end gap-2 pt-1 border-t border-slate-100">
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer"
+              className="px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="button"
               onClick={handleConfirm}
-              className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-md shadow-emerald-600/20 transition-all cursor-pointer"
+              className="flex items-center justify-center gap-1.5 px-5 py-2.5 rounded-xl bg-[#1a73e8] hover:bg-[#1557b0] text-white text-xs font-bold shadow-md shadow-blue-500/20 transition-all cursor-pointer"
             >
               <Check className="w-4 h-4" />
-              <span>Confirm Location</span>
+              <span>Confirm Location Pin</span>
             </button>
           </div>
         </div>

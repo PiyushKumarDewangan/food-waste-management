@@ -841,6 +841,14 @@ export const getMyDeliveries = asyncHandler(async (req, res) => {
         // Look up and prioritize actual Receiver Profile address (dropoffAddress entered by receiver in Profile)
         if (doc.receiver) {
           const rProfile = await ReceiverProfile.findOne({ user: doc.receiver._id || doc.receiver }).lean()
+          const receiverName = (doc.receiver?.fullName || doc.receiver?.name || '').trim().toLowerCase()
+          const currentDropoffLower = (doc.dropoffAddress || '').trim().toLowerCase()
+          const isGenericOrName =
+            !doc.dropoffAddress ||
+            ['receiver address', 'receiver delivery address', 'indore', 'receiver'].includes(currentDropoffLower) ||
+            (receiverName && currentDropoffLower === receiverName) ||
+            currentDropoffLower.length < 5
+
           if (rProfile) {
             if (rProfile.lat != null && rProfile.lng != null && (!doc.dropoffCoords || doc.dropoffCoords.lat == null)) {
               doc.dropoffCoords = { lat: rProfile.lat, lng: rProfile.lng }
@@ -853,21 +861,17 @@ export const getMyDeliveries = asyncHandler(async (req, res) => {
               (doc.receiver?.address && !['Indore'].includes(doc.receiver.address.trim()) ? doc.receiver.address.trim() : null) ||
               (rProfile.organizationAddress && !['87 Elm Street, Downtown, CA 90210', 'Receiver Address', 'Indore'].includes(rProfile.organizationAddress.trim())
                 ? rProfile.organizationAddress.trim()
-                : null) ||
-              rProfile.dropoffAddress ||
-              rProfile.organizationAddress ||
-              ''
-            if (realReceiverAddr) {
+                : null)
+
+            if (realReceiverAddr && (isGenericOrName || !doc.dropoffCoords?.lat)) {
               doc.dropoffAddress = realReceiverAddr
               if (doc._id) {
-                Exchange.updateOne({ _id: doc._id }, { $set: { dropoffAddress: realReceiverAddr } }).catch(() => {})
+                Exchange.updateOne({ _id: doc._id }, { $set: { dropoffAddress: realReceiverAddr, ...(doc.dropoffCoords ? { dropoffCoords: doc.dropoffCoords } : {}) } }).catch(() => {})
               }
             }
           }
-          if (!doc.dropoffAddress || ['Receiver Address', 'Receiver Delivery Address', 'Indore'].includes(doc.dropoffAddress.trim())) {
-            if (doc.receiver?.address) {
-              doc.dropoffAddress = doc.receiver.address
-            }
+          if (isGenericOrName && doc.receiver?.address) {
+            doc.dropoffAddress = doc.receiver.address
           }
         }
         // Auto-resolve missing coordinates dynamically

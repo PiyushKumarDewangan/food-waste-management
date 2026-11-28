@@ -51,8 +51,9 @@ export default function ActivePickups() {
   const [toastMessage, setToastMessage] = useState('')
   const [phoneModal, setPhoneModal] = useState(null)
 
-  const loadPickups = async (tab = activeTab) => {
+  const loadPickups = async (tab = activeTab, silent = false) => {
     try {
+      if (!silent) setLoading(true)
       const res = await receiverService.getPickups(tab)
       if (res.data) {
         const sorted = (res.data.pickups || []).sort((a, b) => {
@@ -64,19 +65,21 @@ export default function ActivePickups() {
         if (res.data.counts) setCounts(res.data.counts)
       }
     } catch (err) {
-      setError('Unable to load pickups.')
+      if (!silent) setError('Unable to load pickups.')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
-  // Initial fetch and polling every 20 seconds for live order status updates
+  // Initial fetch and silent polling every 10 seconds for live order status updates
   useEffect(() => {
-    loadPickups(activeTab)
-    const interval = setInterval(() => {
-      loadPickups(activeTab)
-    }, 20000)
-    return () => clearInterval(interval)
+    loadPickups(activeTab, false)
+    if (activeTab === 'active') {
+      const interval = setInterval(() => {
+        loadPickups(activeTab, true)
+      }, 10000)
+      return () => clearInterval(interval)
+    }
   }, [activeTab])
 
   const handleMarkReceived = async (orderId) => {

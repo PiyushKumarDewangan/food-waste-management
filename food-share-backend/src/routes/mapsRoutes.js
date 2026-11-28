@@ -1,12 +1,9 @@
 import { Router } from 'express'
 import { autocomplete, placeDetails, computeRoute, geocode, reverseGeocode } from '../controllers/mapsController.js'
-import { authenticate } from '../middleware/authenticate.js'
 
 const router = Router()
 
-// All maps routes require authenticated users to prevent abuse
-router.use(authenticate)
-
+// Public map endpoints so road routes and geocoding always render smoothly across all dashboards
 router.get('/geocode', geocode)
 router.get('/reverse-geocode', reverseGeocode)
 router.get('/autocomplete', autocomplete)

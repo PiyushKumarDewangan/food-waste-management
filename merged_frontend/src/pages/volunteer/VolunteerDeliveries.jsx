@@ -522,7 +522,7 @@ export default function VolunteerDeliveries() {
                   </div>
                 </div>
 
-                {/* Upper Route Button: Opens overall exchange route from Donor to Receiver using EXACT GPS coordinates */}
+                {/* Upper Route Navigation Action: Opens live Google Maps navigation for current leg */}
                 {(() => {
                   const pLat = currentRun.pickupCoords?.lat ?? currentRun.donation?.lat
                   const pLng = currentRun.pickupCoords?.lng ?? currentRun.donation?.lng
@@ -539,14 +539,6 @@ export default function VolunteerDeliveries() {
                     currentRun.receiver?.address ||
                     ''
 
-                  const originParam = (pLat != null && pLng != null)
-                    ? `${pLat},${pLng}`
-                    : encodeURIComponent(donorAddress || 'Sector 4 Bhilai')
-
-                  const destParam = (dLat != null && dLng != null)
-                    ? `${dLat},${dLng}`
-                    : encodeURIComponent(receiverAddress || 'Tikrapara Raipur')
-
                   const activeTransport = currentRun.volunteerInfo?.transportType || 'bicycle'
                   const travelMode =
                     activeTransport === 'walking'
@@ -557,19 +549,48 @@ export default function VolunteerDeliveries() {
                       ? 'two_wheeler'
                       : 'driving'
 
-                  const routeUrl = `https://www.google.com/maps/dir/?api=1&origin=${originParam}&destination=${destParam}&travelmode=${travelMode}`
+                  // Live origin if volunteer GPS is tracked
+                  const originQuery =
+                    volunteerLiveCoords?.lat != null && volunteerLiveCoords?.lng != null
+                      ? `&origin=${volunteerLiveCoords.lat},${volunteerLiveCoords.lng}`
+                      : ''
+
+                  // Target for active leg: Stage 1 = Pickup; Stage 2 = Dropoff
+                  const targetCoord = !isPickedUp
+                    ? (pLat != null && pLng != null ? `${pLat},${pLng}` : encodeURIComponent(donorAddress || 'Sector 4 Bhilai'))
+                    : (dLat != null && dLng != null ? `${dLat},${dLng}` : encodeURIComponent(receiverAddress || 'Tikrapara Raipur'))
+
+                  const activeNavUrl = `https://www.google.com/maps/dir/?api=1${originQuery}&destination=${targetCoord}&travelmode=${travelMode}`
+
+                  // Overall full exchange leg (Donor -> Receiver)
+                  const fullLegOrigin = (pLat != null && pLng != null) ? `${pLat},${pLng}` : encodeURIComponent(donorAddress || 'Sector 4 Bhilai')
+                  const fullLegDest = (dLat != null && dLng != null) ? `${dLat},${dLng}` : encodeURIComponent(receiverAddress || 'Tikrapara Raipur')
+                  const fullRouteUrl = `https://www.google.com/maps/dir/?api=1&origin=${fullLegOrigin}&destination=${fullLegDest}&travelmode=${travelMode}`
 
                   return (
-                    <a
-                      href={routeUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-xs font-bold text-gray-700 transition-colors shadow-2xs self-start sm:self-auto cursor-pointer"
-                      title="Open full exchange route from exact Donor coordinates to exact Receiver coordinates"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5 text-gray-400" />
-                      <span>Open Route</span>
-                    </a>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <a
+                        href={activeNavUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer bg-[#1a73e8] hover:bg-[#1557b0] text-white shadow-blue-700/20"
+                        title={!isPickedUp ? 'Start Google Maps Navigation to Donor Pickup' : 'Start Google Maps Navigation to Receiver Drop-off'}
+                      >
+                        <Navigation className="w-3.5 h-3.5 text-white" />
+                        <span>{!isPickedUp ? 'Navigate to Pickup ➔' : 'Navigate to Drop-off ➔'}</span>
+                      </a>
+
+                      <a
+                        href={fullRouteUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-xs font-semibold text-gray-700 transition-colors shadow-2xs cursor-pointer"
+                        title="Open complete Donor ➔ Receiver route in Google Maps"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5 text-gray-400" />
+                        <span>Full Leg</span>
+                      </a>
+                    </div>
                   )
                 })()}
               </div>

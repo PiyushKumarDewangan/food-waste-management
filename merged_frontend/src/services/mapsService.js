@@ -57,7 +57,9 @@ export async function reverseGeocodeCoords(lat, lng) {
 }
 
 /**
- * Compute road route geometry, road distance and ETA duration via Google Routes API
+ * Compute road route geometry, road distance and ETA duration.
+ * Tries backend routing endpoint first, with resilient direct client-side OSRM fallback
+ * so road routes ALWAYS render without requiring a paid or billed Google API key.
  */
 export async function getRoadRoute({
   originLat,
@@ -68,6 +70,7 @@ export async function getRoadRoute({
   destAddress,
   travelMode = 'DRIVE',
 }) {
+  // 1. Try backend road routing endpoint first
   try {
     const res = await apiClient.post('/maps/route', {
       originLat,
@@ -78,9 +81,51 @@ export async function getRoadRoute({
       destAddress,
       travelMode,
     })
-    return res?.data?.route || null
+    if (res?.data?.route) {
+      return res.data.route
+    }
   } catch (error) {
-    console.warn('getRoadRoute failed:', error.message)
-    return null
+    console.warn('Backend /maps/route failed or unauthorized, falling back to direct browser OSRM:', error.message)
   }
+
+  // 2. Direct client-side OSRM Driving Engine fallback (requires ZERO API key, 100% free, open CORS)
+  if (originLat != null && originLng != null && destLat != null && destLng != null) {
+    try {
+      const oLat = Number(originLat)
+      const oLng = Number(originLng)
+      const dLat = Number(destLat)
+      const dLng = Number(destLng)
+      if (!isNaN(oLat) && !isNaN(oLng) && !isNaN(dLat) && !isNaN(dLng)) {
+        const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${oLng},${oLat};${dLng},${dLat}?overview=full&geometries=geojson`
+        const osrmRes = await fetch(osrmUrl)
+        if (osrmRes.ok) {
+          const data = await osrmRes.json()
+          const r = data?.routes?.[0]
+          if (r && r.geometry?.coordinates?.length > 0) {
+            const distanceMeters = Math.round(r.distance || 0)
+            const distanceKm = Number((distanceMeters / 1000).toFixed(1))
+            const durationSeconds = Math.round(r.duration || (distanceKm / 35) * 3600)
+            const mins = Math.max(1, Math.round(durationSeconds / 60))
+            const durationText = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins} mins`
+            // OSRM GeoJSON is [lng, lat], Leaflet polyline needs [lat, lng]
+            const coordinates = r.geometry.coordinates.map(([lng, lat]) => [lat, lng])
+            return {
+              distanceMeters,
+              distanceKm,
+              durationSeconds,
+              durationText,
+              coordinates,
+              encodedPolyline: '',
+              provider: 'OSRM Driving Engine (Free Open Road Routing)',
+              isFallback: false,
+            }
+          }
+        }
+      }
+    } catch (osrmDirectErr) {
+      console.warn('Direct browser OSRM routing failed:', osrmDirectErr.message)
+    }
+  }
+
+  return null
 }

@@ -695,6 +695,237 @@ export const deleteFoodListing = asyncHandler(async (req, res) => {
 })
 
 /**
+ * 8b. POST /api/admin/food
+ * Admin adds a surplus food donation listing directly with quantity and details.
+ */
+export const createAdminFoodListing = asyncHandler(async (req, res) => {
+  const {
+    title,
+    category = 'Cooked Meals',
+    description = '',
+    quantity = 10,
+    unit = 'Servings',
+    bestBefore,
+    expiryHours = 4,
+    pickupAddress = 'Community Center, Main Road',
+    pickupWindow = '10:00 AM - 6:00 PM',
+    pickupInstructions = 'Please bring insulated thermal bags.',
+    imageUrl = '',
+    isVeg = true,
+    donorId,
+  } = req.body
+
+  if (!title || !title.trim()) {
+    throw new ApiError(400, 'Food listing title is required.')
+  }
+
+  // Find a donor to associate this donation with
+  let donor = null
+  if (donorId) {
+    donor = await User.findById(donorId)
+  }
+  if (!donor) {
+    donor = (await User.findOne({ role: 'donor' })) || req.user
+  }
+
+  const calculatedBestBefore = bestBefore
+    ? new Date(bestBefore)
+    : new Date(Date.now() + (Number(expiryHours) || 4) * 60 * 60 * 1000)
+
+  const tags = isVeg ? ['vegetarian', 'veg'] : ['non-veg']
+
+  const donation = await FoodDonation.create({
+    donor: donor._id,
+    title: title.trim(),
+    category,
+    description: description.trim() || `${quantity} ${unit} of fresh ${title.trim()}.`,
+    quantity: Math.max(1, Number(quantity) || 1),
+    unit: unit || 'Servings',
+    bestBefore: calculatedBestBefore,
+    pickupAddress: pickupAddress.trim(),
+    pickupWindow: pickupWindow.trim(),
+    pickupInstructions: pickupInstructions.trim(),
+    imageUrl: imageUrl.trim() || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=800&auto=format&fit=crop&q=80',
+    tags,
+    status: 'available',
+  })
+
+  return res.status(201).json(
+    new ApiResponse(201, { donation }, 'Food listing created successfully.')
+  )
+})
+
+/**
+ * 8c. PATCH /api/admin/food/:id
+ * Updates food quantity, current status, or details.
+ */
+export const updateAdminFoodListing = asyncHandler(async (req, res) => {
+  const { id } = req.params
+  const {
+    quantity,
+    unit,
+    status,
+    title,
+    category,
+    pickupAddress,
+    pickupInstructions,
+    isEndorsed,
+  } = req.body
+
+  const updateFields = {}
+  if (quantity !== undefined && quantity !== null) {
+    updateFields.quantity = Math.max(0, Number(quantity))
+  }
+  if (unit) updateFields.unit = unit
+  if (status) updateFields.status = status.toLowerCase()
+  if (title) updateFields.title = title.trim()
+  if (category) updateFields.category = category
+  if (pickupAddress) updateFields.pickupAddress = pickupAddress.trim()
+  if (pickupInstructions) updateFields.pickupInstructions = pickupInstructions.trim()
+  if (isEndorsed !== undefined) updateFields.isEndorsed = Boolean(isEndorsed)
+
+  const updated = await FoodDonation.findByIdAndUpdate(
+    id,
+    { $set: updateFields },
+    { new: true }
+  ).populate('donor', 'fullName organizationName city phone')
+
+  if (!updated) {
+    throw new ApiError(404, 'Food listing not found.')
+  }
+
+  return res.status(200).json(
+    new ApiResponse(200, { listing: updated }, 'Food listing updated successfully.')
+  )
+})
+
+/**
+ * 8d. GET /api/admin/food/:id/journey
+ * Returns real dynamic lifecycle journey of a food donation from database.
+ */
+export const getAdminFoodJourney = asyncHandler(async (req, res) => {
+  const { id } = req.params
+
+  const donation = await FoodDonation.findById(id).populate('donor', 'fullName organizationName phone city')
+  if (!donation) {
+    throw new ApiError(404, 'Food listing not found.')
+  }
+
+  // Check for any linked exchange
+  const exchange = await Exchange.findOne({
+    $or: [{ donation: id }, { 'items.donation': id }],
+  })
+    .populate('donor', 'fullName organizationName phone')
+    .populate('receiver', 'fullName organizationName phone address city')
+    .populate('volunteer', 'fullName phone vehicleType')
+
+  const donorName =
+    donation.donorOrganization ||
+    donation.donor?.organizationName ||
+    donation.donor?.fullName ||
+    'Registered Donor'
+
+  const receiverName =
+    exchange?.receiverOrganization ||
+    exchange?.receiver?.organizationName ||
+    exchange?.receiver?.fullName ||
+    'Verified Community Kitchen'
+
+  const volunteerName = exchange?.volunteer?.fullName || 'Volunteer Courier'
+
+  const stages = [
+    {
+      step: 1,
+      title: `Food Listed by ${donorName}`,
+      description: `${donation.quantity} ${donation.unit} of "${donation.title}" verified and published.`,
+      time: donation.createdAt
+        ? new Date(donation.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : 'Earlier today',
+      date: donation.createdAt
+        ? new Date(donation.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' })
+        : 'Today',
+      status: 'completed',
+      actor: donorName,
+    },
+    {
+      step: 2,
+      title: 'Active in Community Pool',
+      description: 'Listed in community feed available for local NGOs and verified shelters.',
+      time: donation.createdAt
+        ? new Date(new Date(donation.createdAt).getTime() + 3 * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : 'Active',
+      status: 'completed',
+      actor: 'Platform Engine',
+    },
+    {
+      step: 3,
+      title: exchange ? `Claim Request Confirmed (${receiverName})` : 'Awaiting Receiver Claim',
+      description: exchange
+        ? `Order #${exchange.exchangeId || String(exchange._id).slice(-4).toUpperCase()} placed by ${receiverName}.`
+        : 'Eligible verified NGOs can request this batch.',
+      time: exchange?.createdAt
+        ? new Date(exchange.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : donation.status === 'available'
+        ? 'Current Stage'
+        : 'Pending',
+      status: exchange ? 'completed' : donation.status === 'available' ? 'in_progress' : 'pending',
+      actor: exchange ? receiverName : 'Receiver Queue',
+    },
+    {
+      step: 4,
+      title: exchange?.volunteer ? `Volunteer Assigned (${volunteerName})` : 'Courier Dispatch',
+      description: exchange?.volunteer
+        ? `${volunteerName} dispatched via ${exchange.volunteer.vehicleType || 'Two-Wheeler'} for pickup.`
+        : exchange
+        ? 'Searching for nearby volunteer courier.'
+        : 'Awaiting courier assignment once claimed.',
+      time: exchange?.timeline?.find((t) => t.step === 'volunteer_assigned')?.time
+        ? new Date(exchange.timeline.find((t) => t.step === 'volunteer_assigned').time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : exchange?.status === 'in_transit'
+        ? 'In Transit'
+        : 'Pending',
+      status: ['volunteer_assigned', 'picked_up', 'in_transit', 'completed'].includes(exchange?.status)
+        ? 'completed'
+        : exchange?.status === 'searching_for_volunteer'
+        ? 'in_progress'
+        : 'pending',
+      actor: exchange?.volunteer ? volunteerName : 'Logistics Dispatch',
+    },
+    {
+      step: 5,
+      title: exchange?.status === 'completed' ? 'Final Handover Completed' : 'Delivery & Handover Verification',
+      description:
+        exchange?.status === 'completed'
+          ? `Delivered to ${receiverName} with OTP confirmation.`
+          : 'Final delivery verification & beneficiary handover log.',
+      time: exchange?.completedAt
+        ? new Date(exchange.completedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : 'Pending',
+      status: exchange?.status === 'completed' ? 'completed' : 'pending',
+      actor: exchange?.status === 'completed' ? 'Both Parties' : 'Final Step',
+    },
+  ]
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        donationId: donation._id,
+        title: donation.title,
+        quantity: `${donation.quantity} ${donation.unit}`,
+        currentStatus: donation.status,
+        donor: donorName,
+        receiver: exchange ? receiverName : null,
+        volunteer: exchange?.volunteer ? volunteerName : null,
+        exchangeId: exchange?._id,
+        stages,
+      },
+      'Food lifecycle journey retrieved successfully.'
+    )
+  )
+})
+
+/**
  * 9. GET /api/admin/deliveries
  * Returns all active and completed exchange logistics, courier positions, and stats.
  */
@@ -1186,7 +1417,7 @@ export const syncAdminPlatformNotifications = async (adminUserId) => {
     status: { $in: ['accepted', 'searching_for_volunteer', 'ready_for_pickup'] },
     volunteer: null,
   })
-    .populate('foodDonation', 'title')
+    .populate('donation', 'title')
     .lean()
   for (const ex of unassignedExchanges) {
     const exists = await Notification.exists({
@@ -1198,7 +1429,7 @@ export const syncAdminPlatformNotifications = async (adminUserId) => {
       await safeCreateNotification({
         user: adminUserId,
         title: 'Unassigned Urgent Pickup',
-        message: `Exchange #${ex.exchangeId || String(ex._id).slice(-4).toUpperCase()} for "${ex.foodDonation?.title || 'Food donation'}" needs courier assignment.`,
+        message: `Exchange #${ex.exchangeId || String(ex._id).slice(-4).toUpperCase()} for "${ex.donation?.title || 'Food donation'}" needs courier assignment.`,
         type: 'alert',
         category: 'unassigned_pickup',
         link: '/admin/deliveries',
@@ -1212,7 +1443,7 @@ export const syncAdminPlatformNotifications = async (adminUserId) => {
   const flaggedExchanges = await Exchange.find({
     status: { $in: ['disputed', 'delayed', 'cancelled', 'flagged'] },
   })
-    .populate('foodDonation', 'title')
+    .populate('donation', 'title')
     .lean()
   for (const ex of flaggedExchanges) {
     const exists = await Notification.exists({

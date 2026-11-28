@@ -53,9 +53,9 @@ export default function Exchanges() {
   const [copiedPhoneId, setCopiedPhoneId] = useState(null)
   const [phoneToast, setPhoneToast] = useState('')
 
-  const loadExchanges = async (tab = activeTab) => {
+  const loadExchanges = async (tab = activeTab, silent = false) => {
     try {
-      setLoading(true)
+      if (!silent) setLoading(true)
       const res = await donorService.getExchanges(tab)
       if (res.data) {
         const sorted = (res.data.exchanges || []).sort((a, b) => {
@@ -69,12 +69,18 @@ export default function Exchanges() {
     } catch (err) {
       console.error('Failed to load exchanges:', err)
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
   useEffect(() => {
-    loadExchanges(activeTab)
+    loadExchanges(activeTab, false)
+    if (activeTab === 'in_progress') {
+      const timer = setInterval(() => {
+        loadExchanges(activeTab, true)
+      }, 10000)
+      return () => clearInterval(timer)
+    }
   }, [activeTab])
 
   // Handle donor action buttons: "Mark as Ready for Pickup", "Confirm Handover to Volunteer"
@@ -658,7 +664,15 @@ export default function Exchanges() {
                       dropoffCoords={exchange.dropoffCoords}
                       volunteerCoords={exchange.volunteerCoords}
                       pickupAddress={exchange.pickupAddress || donation.pickupAddress || 'Donor Pickup'}
-                      dropoffAddress={exchange.dropoffAddress || 'Receiver Drop-off'}
+                      dropoffAddress={
+                        exchange.dropoffAddress &&
+                        exchange.dropoffAddress.trim().toLowerCase() !== (exchange.receiver?.fullName || '').trim().toLowerCase() &&
+                        !['receiver address', 'receiver delivery address', 'indore'].includes(exchange.dropoffAddress.trim().toLowerCase())
+                          ? exchange.dropoffAddress
+                          : exchange.receiver?.address && !['indore'].includes(exchange.receiver.address.trim().toLowerCase())
+                          ? exchange.receiver.address
+                          : 'Tikrapara, Raipur'
+                      }
                       volunteerName={volunteer.name || exchange.volunteer?.fullName || 'Volunteer Courier'}
                       volunteerTransport={volunteer.transportType || 'bicycle'}
                       status={exchange.status}

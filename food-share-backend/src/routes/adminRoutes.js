@@ -8,6 +8,9 @@ import {
   toggleUserStatus,
   updateUserDetails,
   getAdminFoodListings,
+  createAdminFoodListing,
+  updateAdminFoodListing,
+  getAdminFoodJourney,
   broadcastFoodSOS,
   deleteFoodListing,
   getAdminDeliveries,
@@ -48,6 +51,9 @@ router.patch('/users/:id', updateUserDetails)
 
 // 4. Food Management & Inventory
 router.get('/food', getAdminFoodListings)
+router.post('/food', createAdminFoodListing)
+router.patch('/food/:id', updateAdminFoodListing)
+router.get('/food/:id/journey', getAdminFoodJourney)
 router.post('/food/:id/broadcast-sos', broadcastFoodSOS)
 router.delete('/food/:id', deleteFoodListing)
 

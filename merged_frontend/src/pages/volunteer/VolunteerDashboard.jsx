@@ -6,6 +6,7 @@ import {
   Utensils,
   Star,
   MapPin,
+  Navigation,
   Phone,
   AlertTriangle,
   ArrowRight,
@@ -600,23 +601,34 @@ export default function VolunteerDashboard() {
               </div>
 
               <a
-                href={`https://www.google.com/maps/dir/?api=1&origin=Current+Location&destination=${
+                href={`https://www.google.com/maps/dir/?api=1${
+                  activeDelivery.volunteerCoords?.lat != null && activeDelivery.volunteerCoords?.lng != null
+                    ? `&origin=${activeDelivery.volunteerCoords.lat},${activeDelivery.volunteerCoords.lng}`
+                    : ''
+                }&destination=${
                   isEnRouteOrDropoff
-                    ? (activeDelivery.dropoffCoords?.lat != null && activeDelivery.dropoffCoords?.lng != null)
+                    ? activeDelivery.dropoffCoords?.lat != null && activeDelivery.dropoffCoords?.lng != null
                       ? `${activeDelivery.dropoffCoords.lat},${activeDelivery.dropoffCoords.lng}`
                       : encodeURIComponent(activeDelivery.dropoffAddress || activeDelivery.receiver?.address || 'Tikrapara Raipur')
-                    : (activeDelivery.pickupCoords?.lat != null && activeDelivery.pickupCoords?.lng != null)
+                    : activeDelivery.pickupCoords?.lat != null && activeDelivery.pickupCoords?.lng != null
                     ? `${activeDelivery.pickupCoords.lat},${activeDelivery.pickupCoords.lng}`
-                    : (activeDelivery.donation?.lat != null && activeDelivery.donation?.lng != null)
+                    : activeDelivery.donation?.lat != null && activeDelivery.donation?.lng != null
                     ? `${activeDelivery.donation.lat},${activeDelivery.donation.lng}`
                     : encodeURIComponent(activeDelivery.pickupAddress || activeDelivery.donation?.pickupAddress || activeDelivery.donor?.address || 'Sector 4 Bhilai')
+                }&travelmode=${
+                  activeDelivery.transportType === 'motorcycle'
+                    ? 'two_wheeler'
+                    : activeDelivery.transportType === 'bicycle'
+                    ? 'bicycling'
+                    : 'driving'
                 }`}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#2E7D32] text-white text-xs font-bold hover:bg-[#256828] transition-colors shadow-2xs shrink-0 cursor-pointer"
+                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-white text-xs font-bold transition-all shadow-md shrink-0 cursor-pointer bg-[#1a73e8] hover:bg-[#1557b0] shadow-blue-500/20"
+                title={isEnRouteOrDropoff ? 'Navigate to Receiver in Google Maps' : 'Navigate to Donor in Google Maps'}
               >
-                <MapPin className="w-3.5 h-3.5" />
-                <span>Get Directions</span>
+                <Navigation className="w-3.5 h-3.5" />
+                <span>{isEnRouteOrDropoff ? 'Navigate to Drop-off ➔' : 'Navigate to Pickup ➔'}</span>
               </a>
             </div>
 

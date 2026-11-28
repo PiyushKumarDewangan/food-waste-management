@@ -277,6 +277,21 @@ export const adminService = {
     return await apiClient.post(`/admin/food/${foodId}/broadcast-sos`)
   },
 
+  async createFoodListing(data) {
+    const res = await apiClient.post('/admin/food', data)
+    return res.data?.data || res.data
+  },
+
+  async updateFoodListing(foodId, data) {
+    const res = await apiClient.patch(`/admin/food/${foodId}`, data)
+    return res.data?.data || res.data
+  },
+
+  async getFoodJourney(foodId) {
+    const res = await apiClient.get(`/admin/food/${foodId}/journey`)
+    return res.data?.data || res.data
+  },
+
   async deleteFoodListing(foodId) {
     return await apiClient.delete(`/admin/food/${foodId}`)
   },
